@@ -24,3 +24,6 @@ muse-simulator.ppm
 # Local gadget provisioning and original-device flash backups.
 .sdk-token
 /backups/
+
+# canelita: cmake/ninja instalados con pip para el simulador
+.tools/

@@ -26,8 +26,7 @@ dependencies.lock
 
 .claude/
 
-# Your own avatar (tools/muse/AVATAR_RECIPE.md): built when present, never committed.
-components/muse/avatar/
+# canelita: el avatar propio (cara de Canela) SÍ se versiona en esta rama.
 # tools/muse/make_gifs.py's default output directory.
 /gifs/
 

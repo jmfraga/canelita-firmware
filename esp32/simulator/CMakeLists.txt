@@ -146,6 +146,15 @@ endif()
 
 set(MUSE_COMPONENT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../components/muse")
 
+# canelita: igual que el firmware, un avatar propio en components/muse/avatar/
+# reemplaza al de esp32/avatar/ (que no cubre la licencia Apache).
+if(EXISTS "${MUSE_COMPONENT_DIR}/avatar/muse_pixel.c")
+    set(MUSE_AVATAR_SRC "${MUSE_COMPONENT_DIR}/avatar/muse_pixel.c")
+    message(STATUS "Avatar propio: components/muse/avatar/muse_pixel.c")
+else()
+    set(MUSE_AVATAR_SRC "${MUSE_COMPONENT_DIR}/../../avatar/muse_pixel.c")
+endif()
+
 add_executable(muse_simulator
     src/main.c
     src/sim_board.c
@@ -154,7 +163,7 @@ add_executable(muse_simulator
     "${MUSE_COMPONENT_DIR}/muse_ui.c"
     "${MUSE_COMPONENT_DIR}/muse_state.c"
     "${MUSE_COMPONENT_DIR}/muse_text.c"
-    "${MUSE_COMPONENT_DIR}/../../avatar/muse_pixel.c"
+    "${MUSE_AVATAR_SRC}"
 )
 
 target_include_directories(muse_simulator PRIVATE

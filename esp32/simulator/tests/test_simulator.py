@@ -24,7 +24,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-WIDTH = HEIGHT = 412
+WIDTH = HEIGHT = 466  # canelita: Waveshare AMOLED 1.75C (ver src/sim_board.c)
 HERE = Path(__file__).resolve().parent
 SCENARIOS = tuple(sorted((HERE / "scenarios").glob("*.txt")))
 

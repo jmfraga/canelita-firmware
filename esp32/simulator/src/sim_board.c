@@ -20,7 +20,9 @@
 #include "src/drivers/sdl/lv_sdl_mouse.h"
 #include "src/drivers/sdl/lv_sdl_window.h"
 
-#define WATCHER_RESOLUTION 412
+/* canelita: Waveshare ESP32-S3-Touch-AMOLED-1.75C, AMOLED redondo 466x466
+ * (el SDK original simula una SenseCAP Watcher de 412x412). */
+#define WATCHER_RESOLUTION 466
 
 static lv_display_t *s_display;
 
