@@ -95,14 +95,15 @@ void muse_pixel_render(const muse_pose_t *p) {
     /* Giro de la espiral: lento siempre, rápido al pensar. */
     float spin = (m == MUSE_MODE_THINKING) ? mt * 0.45f : t * 0.03f;
 
-    /* Parpadeo espontáneo cada ~4.2 s (sólo despierta y sin estar "feliz"). */
-    float open = 1.f;
-    if (m == MUSE_MODE_IDLE || m == MUSE_MODE_SPEAKING) {
+    /* Ojos: más abiertos al escuchar (atenta), casi cerrados apagada. */
+    float open = (m == MUSE_MODE_LISTENING) ? 1.15f : 1.f;
+    if (m == MUSE_MODE_OFF) open = 0.12f;                    /* dormida */
+    /* Parpadeo espontáneo cada ~4.2 s en reposo, escuchando y hablando: una
+     * cara que no parpadea se ve congelada, sobre todo mientras te escucha. */
+    if (m == MUSE_MODE_IDLE || m == MUSE_MODE_LISTENING || m == MUSE_MODE_SPEAKING) {
         float ph = fmodf(t, 4.2f);
         if (ph < 0.14f) open = 0.15f;
     }
-    if (m == MUSE_MODE_LISTENING) open = 1.15f;              /* atenta */
-    if (m == MUSE_MODE_OFF) open = 0.12f;                    /* dormida */
 
     /* Mirada: al pensar, arriba y a un lado. */
     float lx = 0.f, ly = 0.f;
