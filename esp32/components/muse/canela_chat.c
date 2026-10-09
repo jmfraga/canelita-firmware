@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "esp_crt_bundle.h"
+#include "esp_debug_helpers.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -42,6 +43,7 @@
 #include "muse_chat.h"
 #include "muse_chat_priv.h"
 #include "muse_link.h"
+#include "muse_settings.h"
 #include "muse_wifi.h"
 
 static const char *TAG = "canelita";
@@ -152,9 +154,14 @@ static void ascii_es(char *s)
 
 /* ---- JSON mínimo: la respuesta tiene campos fijos de tipo string ---- */
 
-/* Devuelve un puntero (en buf) al valor del string "key", ya sin escapes, o NULL. */
-static char *json_str(char *buf, const char *key)
+/* Devuelve un puntero (en buf) al valor del string "key", ya sin escapes, o NULL.
+ * *after queda justo después de la comilla de cierre ORIGINAL: ahí debe seguir la
+ * siguiente búsqueda. Quitar escapes acorta el valor y deja bytes viejos, con un
+ * terminador en el cierre original; buscar desde el final nuevo chocaba con él y
+ * no encontraba el campo siguiente ("RESPUESTA SIN AUDIO" si Canela usaba \n o \"). */
+static char *json_str(char *buf, const char *key, char **after)
 {
+    *after = buf;
     char pat[48];
     snprintf(pat, sizeof(pat), "\"%s\"", key);
     char *p = strstr(buf, pat);
@@ -170,6 +177,7 @@ static char *json_str(char *buf, const char *key)
     }
     if (!*p) return NULL;
     *p = 0;                              /* corta el valor in situ */
+    *after = p + 1;
     muse_hatch_unescape(start);
     return start;
 }
@@ -330,15 +338,16 @@ static void procesar(job_t *job)
     if (status != 200) { fail = http_error(status); goto done; }
 
     /* Ojo: json_str corta el buffer; se leen en el orden en que vienen. */
-    char *oido = json_str(resp, "texto_oido");
+    char *pos = resp;
+    char *oido = json_str(pos, "texto_oido", &pos);
     char heard[EV_TEXT];
     strlcpy(heard, oido ? oido : "", sizeof(heard));
     ascii_es(heard);
-    char *resp_text = json_str(oido ? oido + strlen(oido) + 1 : resp, "texto_respuesta");
+    char *resp_text = json_str(pos, "texto_respuesta", &pos);
     char reply[TEXT_MAX];
     strlcpy(reply, resp_text ? resp_text : "", sizeof(reply));
     ascii_es(reply);
-    char *b64 = json_str(resp_text ? resp_text + strlen(resp_text) + 1 : resp, "audio_mp3_b64");
+    char *b64 = json_str(pos, "audio_mp3_b64", &pos);
     if (!b64) { fail = "RESPUESTA SIN AUDIO"; goto done; }
 
     size_t b64_len = strlen(b64), mp3_len = 0;
@@ -627,6 +636,23 @@ bool canela_console(char *line)
                    aps[i].secure ? "true" : "false");
         }
         printf("]\n");
+        return true;
+    }
+    if (!strcmp(cmd, "trazas")) {
+        /* Diagnóstico de congelamientos: la pila de TODAS las tareas, en vivo. La
+         * consola sigue viva aunque la interfaz o la voz se traben. Decodificar con
+         * xtensa-esp32s3-elf-addr2line -pfiaC -e build-175c/muse-gadget.elf <dirs>. */
+        printf("@canelita.trazas inicio\n");
+        fflush(stdout);
+        esp_backtrace_print_all_tasks(24);
+        printf("@canelita.trazas fin\n");
+        return true;
+    }
+    if (!strncmp(cmd, "vol ", 4)) {
+        int v = atoi(cmd + 4);
+        v = v < 0 ? 0 : v > 100 ? 100 : v;
+        muse_settings_set_volume(v);
+        printf("@canelita.ok vol %d\n", v);
         return true;
     }
     printf("@canelita.error comando desconocido\n");

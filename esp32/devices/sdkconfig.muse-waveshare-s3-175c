@@ -68,3 +68,20 @@ CONFIG_PM_PROFILING=y
 
 # canelita: capturas de pantalla por USB (tecla p de la consola; tools/muse/snap.py)
 CONFIG_LV_USE_SNAPSHOT=y
+
+# canelita (2026-10-08): vigilantes ENCENDIDOS. Con los dos apagados, la placa se
+# congeló (pantalla y voz) sin decir nada, mientras el latido y la consola seguían
+# vivos; la causa no se ha visto (sospecha: un núcleo con interrupciones apagadas). Con el de
+# interrupciones, un congelamiento dispara pánico con la pila de AMBOS núcleos y
+# la placa se reinicia sola en vez de quedarse trabada.
+CONFIG_ESP_INT_WDT=y
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=800
+CONFIG_ESP_INT_WDT_CHECK_CPU1=y
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=15
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
+# El de tareas sólo AVISA con su traza (no reinicia): sirve para diagnosticar
+# una tarea que acapara un núcleo sin bloquear las interrupciones.
+# CONFIG_ESP_TASK_WDT_PANIC is not set
