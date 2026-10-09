@@ -13,8 +13,10 @@
  *
  * Un turno: se acumula el PCM (16 kHz mono) mientras se habla; al soltar, una
  * tarea arma un WAV, lo manda por HTTPS con los tres secretos (dos de
- * Cloudflare Access y el token del dispositivo), decodifica el MP3 de la
- * respuesta con minimp3 y lo pasa de 24 a 16 kHz para la bocina.
+ * Cloudflare Access y el token del dispositivo) y pide la respuesta POR FRASES
+ * (stream=1): cada frase llega como MP3 propio, se decodifica con minimp3, se
+ * pasa de 24 a 16 kHz y se agrega al audio del turno, así que la bocina empieza
+ * con la primera frase mientras el servidor genera las demás.
  *
  * Configuración en NVS (espacio "canelita"), grabada por USB con los comandos
  * de consola canelita.* (ver canela_console). Nunca se imprime un valor.
@@ -34,7 +36,6 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "mbedtls/base64.h"
 #include "minimp3.h"
 #include "nvs.h"
 
@@ -55,10 +56,12 @@ static const char *TAG = "canelita";
 #define PCM_CAP        (MIC_RATE * MAX_SECS)            /* frames */
 #define TEXT_MAX       1024
 #define EV_TEXT        96
-#define RESP_MAX       (3 * 1024 * 1024)                /* JSON con el MP3 en base64 */
+#define FRAME_MAX      (2 * 1024 * 1024)                /* un cuadro del flujo (MP3 de una frase) */
+#define MAX_SEG        48                               /* frases por respuesta, para los subtítulos */
 #define BOUNDARY       "----canelita7d1f2a"
 
 #define BIG (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#define STREAM_PART    "--" BOUNDARY "\r\nContent-Disposition: form-data; name=\"stream\"\r\n\r\n1\r\n"
 
 /* ---- Configuración (NVS) ---- */
 
@@ -99,9 +102,12 @@ static struct {
     bool talking;
     int16_t *pcm;                        /* lo que se dijo, 16 kHz mono */
     size_t n;
-    int16_t *out;                        /* la respuesta, 16 kHz mono */
-    size_t out_n, out_rd;
+    int16_t *out;                        /* la respuesta, 16 kHz mono; crece por frases */
+    size_t out_n, out_rd, out_cap;
     char text[TEXT_MAX];                 /* para los subtítulos */
+    /* Dónde termina cada frase: en el audio (muestras) y en `text` (bytes). */
+    size_t seg_pcm[MAX_SEG], seg_txt[MAX_SEG];
+    int nseg;
 } s_turn;
 
 static void emit(muse_hatch_ev_t type, const char *text)
@@ -116,8 +122,9 @@ static void free_turn_locked(void)
     heap_caps_free(s_turn.pcm);
     heap_caps_free(s_turn.out);
     s_turn.pcm = s_turn.out = NULL;
-    s_turn.n = s_turn.out_n = s_turn.out_rd = 0;
+    s_turn.n = s_turn.out_n = s_turn.out_rd = s_turn.out_cap = 0;
     s_turn.text[0] = 0;
+    s_turn.nseg = 0;
     s_turn.talking = false;
 }
 
@@ -152,36 +159,6 @@ static void ascii_es(char *s)
     *w = 0;
 }
 
-/* ---- JSON mínimo: la respuesta tiene campos fijos de tipo string ---- */
-
-/* Devuelve un puntero (en buf) al valor del string "key", ya sin escapes, o NULL.
- * *after queda justo después de la comilla de cierre ORIGINAL: ahí debe seguir la
- * siguiente búsqueda. Quitar escapes acorta el valor y deja bytes viejos, con un
- * terminador en el cierre original; buscar desde el final nuevo chocaba con él y
- * no encontraba el campo siguiente ("RESPUESTA SIN AUDIO" si Canela usaba \n o \"). */
-static char *json_str(char *buf, const char *key, char **after)
-{
-    *after = buf;
-    char pat[48];
-    snprintf(pat, sizeof(pat), "\"%s\"", key);
-    char *p = strstr(buf, pat);
-    if (!p) return NULL;
-    p = strchr(p + strlen(pat), ':');
-    if (!p) return NULL;
-    while (*++p == ' ') {}
-    if (*p != '"') return NULL;
-    char *start = ++p;
-    for (; *p; p++) {
-        if (*p == '\\' && p[1]) { p++; continue; }
-        if (*p == '"') break;
-    }
-    if (!*p) return NULL;
-    *p = 0;                              /* corta el valor in situ */
-    *after = p + 1;
-    muse_hatch_unescape(start);
-    return start;
-}
-
 /* ---- WAV ---- */
 
 static void wav_header(uint8_t h[44], uint32_t frames)
@@ -201,7 +178,7 @@ static int16_t *mp3_to_pcm(const uint8_t *mp3, size_t len, size_t *out_frames)
 {
     static mp3dec_t dec;                 /* ~6 KB: fuera de la pila */
     mp3dec_init(&dec);
-    size_t cap = MUSE_AUDIO_RATE * 30, n = 0;
+    size_t cap = MUSE_AUDIO_RATE * 8, n = 0;   /* una frase; crece si hace falta */
     int16_t *out = heap_caps_malloc(cap * 2, BIG);
     int16_t *frame = heap_caps_malloc(MINIMP3_MAX_SAMPLES_PER_FRAME * 2, BIG);
     if (!out || !frame) { heap_caps_free(out); heap_caps_free(frame); return NULL; }
@@ -270,25 +247,63 @@ static bool write_all(esp_http_client_handle_t c, const void *p, size_t n)
     return true;
 }
 
+/* Lee exactamente n bytes del cuerpo (que puede venir en trozos). */
+static bool read_exact(esp_http_client_handle_t c, void *buf, size_t n)
+{
+    char *b = buf;
+    while (n) {
+        int r = esp_http_client_read(c, b, n);
+        if (r <= 0) return false;
+        b += r; n -= r;
+    }
+    return true;
+}
+
+/* Agrega una frase al audio del turno y anota dónde termina (audio y texto). */
+static bool append_frase(uint32_t gen, const int16_t *pcm, size_t n, size_t txt_end)
+{
+    bool ok = true;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (gen == s_gen) {
+        if (s_turn.out_n + n > s_turn.out_cap) {
+            size_t ncap = s_turn.out_cap ? s_turn.out_cap : MUSE_AUDIO_RATE * 30;
+            while (ncap < s_turn.out_n + n) ncap *= 2;
+            int16_t *g = heap_caps_realloc(s_turn.out, ncap * 2, BIG);
+            if (g) { s_turn.out = g; s_turn.out_cap = ncap; }
+            else ok = false;
+        }
+        if (ok) {
+            memcpy(s_turn.out + s_turn.out_n, pcm, n * 2);
+            s_turn.out_n += n;
+            int k = s_turn.nseg < MAX_SEG ? s_turn.nseg++ : MAX_SEG - 1;
+            s_turn.seg_pcm[k] = s_turn.out_n;
+            s_turn.seg_txt[k] = txt_end;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return ok;
+}
+
 static void procesar(job_t *job)
 {
-    char *resp = NULL;
-    uint8_t *mp3 = NULL;
+    uint8_t *frame = NULL;               /* un cuadro del flujo */
+    char *reply_utf8 = NULL;             /* R tal cual: las frases dicen dónde terminan en él */
     int16_t *out = NULL;
-    size_t out_n = 0;
     const char *fail = NULL;
+    static char fail_buf[EV_TEXT];       /* un error que manda el servidor (cuadro E) */
     char url[200];
     snprintf(url, sizeof(url), "%s/v1/agentes/" AGENTE "/voz", s_url);
 
-    /* Cuerpo multipart: un campo "audio" (WAV) o "texto". */
-    char head[256], tail[48];
+    /* Cuerpo multipart: "stream"=1 (respuesta por frases) y un campo "audio"
+     * (WAV) o "texto". */
+    char head[384], tail[48];
     uint8_t wav[44];
     size_t body_len;
     if (job->texto) {
-        snprintf(head, sizeof(head), "--" BOUNDARY "\r\nContent-Disposition: form-data; name=\"texto\"\r\n\r\n");
+        snprintf(head, sizeof(head), STREAM_PART "--" BOUNDARY "\r\nContent-Disposition: form-data; name=\"texto\"\r\n\r\n");
         body_len = strlen(head) + strlen(job->texto);
     } else {
-        snprintf(head, sizeof(head), "--" BOUNDARY "\r\nContent-Disposition: form-data; name=\"audio\"; "
+        snprintf(head, sizeof(head), STREAM_PART "--" BOUNDARY "\r\nContent-Disposition: form-data; name=\"audio\"; "
                  "filename=\"voz.wav\"\r\nContent-Type: audio/wav\r\n\r\n");
         wav_header(wav, job->n);
         body_len = strlen(head) + sizeof(wav) + job->n * 2;
@@ -318,60 +333,87 @@ static void procesar(job_t *job)
 
     esp_http_client_fetch_headers(c);
     int status = esp_http_client_get_status_code(c);
-    size_t cap = 256 * 1024, len = 0;
-    resp = heap_caps_malloc(cap + 1, BIG);
-    if (!resp) { fail = "SIN MEMORIA"; goto done; }
-    for (;;) {
-        if (len == cap) {
-            if (cap >= RESP_MAX) { fail = "RESPUESTA DEMASIADO LARGA"; goto done; }
-            char *g = heap_caps_realloc(resp, cap * 2 + 1, BIG);
-            if (!g) { fail = "SIN MEMORIA"; goto done; }
-            resp = g; cap *= 2;
+    if (status != 200) {
+        ESP_LOGI(TAG, "HTTP %d en %.1fs", status, (esp_timer_get_time() - t0) / 1e6);
+        fail = http_error(status); goto done;
+    }
+
+    /* El flujo: cuadros de 1 byte de tipo + 4 de largo (big-endian) + datos
+     * (canela-web, canelita.py). H oído, R respuesta, A frase, E error, Z fin. */
+    bool fin = false, primera = true;
+    size_t total = 0;
+    while (!fin) {
+        if (job->gen != s_gen) goto done;            /* turno cancelado: se suelta */
+        uint8_t h[5];
+        if (!read_exact(c, h, 5)) { fail = "SE CORTO LA RESPUESTA"; goto done; }
+        uint32_t n = (uint32_t)h[1] << 24 | h[2] << 16 | h[3] << 8 | h[4];
+        if (n > FRAME_MAX) { fail = "RESPUESTA DEMASIADO LARGA"; goto done; }
+        heap_caps_free(frame);
+        frame = heap_caps_malloc(n + 1, BIG);
+        if (!frame) { fail = "SIN MEMORIA"; goto done; }
+        if (!read_exact(c, frame, n)) { fail = "SE CORTO LA RESPUESTA"; goto done; }
+        frame[n] = 0;
+        switch (h[0]) {
+        case 'H': {
+            char heard[EV_TEXT];
+            strlcpy(heard, (char *)frame, sizeof(heard));
+            ascii_es(heard);
+            if (heard[0] && job->gen == s_gen) emit(MUSE_HATCH_EV_HEARD, heard);
+            break;
         }
-        int r = esp_http_client_read(c, resp + len, cap - len);
-        if (r < 0) { fail = "SE CORTO LA RESPUESTA"; goto done; }
-        if (r == 0) break;
-        len += r;
+        case 'R': {
+            free(reply_utf8);
+            reply_utf8 = strdup((char *)frame);
+            char reply[TEXT_MAX];
+            strlcpy(reply, (char *)frame, sizeof(reply));
+            ascii_es(reply);
+            xSemaphoreTake(s_lock, portMAX_DELAY);
+            if (job->gen == s_gen) {
+                strlcpy(s_turn.text, reply, sizeof(s_turn.text));
+                emit(MUSE_HATCH_EV_REPLY, reply);
+            }
+            xSemaphoreGive(s_lock);
+            ESP_LOGI(TAG, "texto en %.1fs (%u caracteres)", (esp_timer_get_time() - t0) / 1e6,
+                     (unsigned)strlen(reply));
+            break;
+        }
+        case 'A': {
+            if (n < 2) { fail = "AUDIO CORRUPTO"; goto done; }
+            /* Dónde termina la frase en R (bytes UTF-8) → en el texto ASCII de la pantalla. */
+            size_t end_utf8 = (size_t)frame[0] << 8 | frame[1], txt_end = 0;
+            if (reply_utf8) {
+                char tmp[TEXT_MAX];
+                strlcpy(tmp, reply_utf8, end_utf8 + 1 < sizeof(tmp) ? end_utf8 + 1 : sizeof(tmp));
+                ascii_es(tmp);
+                txt_end = strlen(tmp);
+            }
+            size_t out_n = 0;
+            out = mp3_to_pcm(frame + 2, n - 2, &out_n);
+            if (!out || !out_n) { fail = "NO PUDE DECODIFICAR EL AUDIO"; goto done; }
+            if (!append_frase(job->gen, out, out_n, txt_end)) { fail = "SIN MEMORIA"; goto done; }
+            heap_caps_free(out); out = NULL;
+            total += out_n;
+            if (primera) {
+                primera = false;
+                ESP_LOGI(TAG, "primera frase en %.1fs", (esp_timer_get_time() - t0) / 1e6);
+            }
+            break;
+        }
+        case 'E':
+            strlcpy(fail_buf, (char *)frame, sizeof(fail_buf));
+            ascii_es(fail_buf);
+            fail = fail_buf;
+            goto done;
+        case 'Z':
+            fin = true;
+            break;
+        default:
+            break;                                   /* tipo nuevo: se ignora */
+        }
     }
-    resp[len] = 0;
-    ESP_LOGI(TAG, "HTTP %d, %u bytes en %.1fs", status, (unsigned)len, (esp_timer_get_time() - t0) / 1e6);
-    if (status != 200) { fail = http_error(status); goto done; }
-
-    /* Ojo: json_str corta el buffer; se leen en el orden en que vienen. */
-    char *pos = resp;
-    char *oido = json_str(pos, "texto_oido", &pos);
-    char heard[EV_TEXT];
-    strlcpy(heard, oido ? oido : "", sizeof(heard));
-    ascii_es(heard);
-    char *resp_text = json_str(pos, "texto_respuesta", &pos);
-    char reply[TEXT_MAX];
-    strlcpy(reply, resp_text ? resp_text : "", sizeof(reply));
-    ascii_es(reply);
-    char *b64 = json_str(pos, "audio_mp3_b64", &pos);
-    if (!b64) { fail = "RESPUESTA SIN AUDIO"; goto done; }
-
-    size_t b64_len = strlen(b64), mp3_len = 0;
-    mp3 = heap_caps_malloc(b64_len * 3 / 4 + 4, BIG);
-    if (!mp3 || mbedtls_base64_decode(mp3, b64_len * 3 / 4 + 4, &mp3_len, (uint8_t *)b64, b64_len)) {
-        fail = "AUDIO CORRUPTO"; goto done;
-    }
-    heap_caps_free(resp); resp = NULL;
-    out = mp3_to_pcm(mp3, mp3_len, &out_n);
-    if (!out || !out_n) { fail = "NO PUDE DECODIFICAR EL AUDIO"; goto done; }
-    ESP_LOGI(TAG, "respuesta: %.1fs de audio, %u caracteres, lista en %.1fs",
-             (double)out_n / MUSE_AUDIO_RATE, (unsigned)strlen(reply), (esp_timer_get_time() - t0) / 1e6);
-
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (job->gen == s_gen) {
-        heap_caps_free(s_turn.out);
-        s_turn.out = out; s_turn.out_n = out_n; s_turn.out_rd = 0;
-        strlcpy(s_turn.text, reply, sizeof(s_turn.text));
-        out = NULL;                      /* ahora es del turno */
-        if (heard[0]) emit(MUSE_HATCH_EV_HEARD, heard);
-        emit(MUSE_HATCH_EV_REPLY, reply);
-        emit(MUSE_HATCH_EV_DONE, "");
-    }
-    xSemaphoreGive(s_lock);
+    ESP_LOGI(TAG, "respuesta: %.1fs de audio, completa en %.1fs", (double)total / MUSE_AUDIO_RATE,
+             (esp_timer_get_time() - t0) / 1e6);
+    if (job->gen == s_gen) emit(MUSE_HATCH_EV_DONE, "");
 
 done:
     if (fail) {
@@ -379,8 +421,8 @@ done:
         if (job->gen == s_gen) emit(MUSE_HATCH_EV_ERROR, fail);
     }
     esp_http_client_cleanup(c);
-    heap_caps_free(resp);
-    heap_caps_free(mp3);
+    heap_caps_free(frame);
+    free(reply_utf8);
     heap_caps_free(out);
     heap_caps_free(job->pcm);
     free(job->texto);
@@ -526,11 +568,18 @@ muse_hatch_ev_t muse_hatch_turn_event(char *text, size_t cap)
 
 bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
 {
+    /* La frase que suena, y dentro de ella en proporción: el audio total aún
+     * no se sabe mientras llegan las frases. */
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    size_t len = strlen(s_turn.text), total = s_turn.out_n;
+    size_t len = strlen(s_turn.text);
     bool ok = false;
-    if (len && total) {
-        size_t at = (size_t)((double)played * len / total);
+    if (len && s_turn.nseg) {
+        int k = 0;
+        while (k < s_turn.nseg - 1 && played >= s_turn.seg_pcm[k]) k++;
+        size_t p0 = k ? s_turn.seg_pcm[k - 1] : 0, t0 = k ? s_turn.seg_txt[k - 1] : 0;
+        size_t p1 = s_turn.seg_pcm[k], t1 = s_turn.seg_txt[k];
+        size_t at = t1;
+        if (played < p1 && p1 > p0) at = t0 + (size_t)((double)(played - p0) * (t1 - t0) / (p1 - p0));
         ok = muse_hatch_caption_at(s_turn.text, at < len ? at : len - 1, out, cap);
     }
     xSemaphoreGive(s_lock);
