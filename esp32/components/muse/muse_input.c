@@ -15,6 +15,9 @@
  */
 
 #include "muse_input.h"
+#if CONFIG_CANELITA_CHAT
+#include "canela_chat.h"
+#endif
 
 #include <stdint.h>
 #include <stdio.h>
@@ -570,6 +573,11 @@ static void set_face(const char *name)
  */
 static bool console_command(char *line, bool whole)
 {
+#if CONFIG_CANELITA_CHAT
+    if (canela_console(line)) {
+        return true;
+    }
+#endif
     if (!strcmp(line, "status")) {
         size_t cap = 1024;   /* long SSID, host and VM names escaped: past 512 */
         char *json = heap_caps_malloc(cap, MUSE_BIG_CAPS);

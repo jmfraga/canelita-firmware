@@ -42,7 +42,9 @@ if(CONFIG_MUSE_ENABLED)
         "muse_lv_mem.c"
         "muse_link.c"
         "muse_ble.c")
-    if(CONFIG_MUSE_HATCH)
+    if(CONFIG_CANELITA_CHAT)
+        list(APPEND srcs "canela_chat.c")   # canelita: turnos hacia Canela
+    elseif(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
         list(APPEND embed "test_reply.mp3")   # muse_hatch_mp3_selftest
     else()

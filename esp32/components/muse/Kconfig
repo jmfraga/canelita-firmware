@@ -154,6 +154,22 @@ menu "Muse"
             GPIO, and set that GPIO here. -1 leaves push-to-talk recording
             silence.
 
+    config CANELITA_CHAT
+        bool "canelita: push-to-talk hacia Canela (canela.docfraga.com)"
+        depends on MUSE_ENABLED && SPIRAM
+        default y
+        # Cloudflare (canela.docfraga.com) firma con GTS Root R4 y manda su
+        # versión con firma cruzada de "GlobalSign Root CA" (R1), que ya NO viene
+        # en el paquete de certificados de ESP-IDF 6. Sin esto, TLS falla con
+        # "Failed to verify certificate" aunque GTS Root R4 sí esté en el paquete.
+        # No se fija un certificado a mano: Cloudflare rota de autoridad al renovar.
+        select MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY
+        help
+            Reemplaza la sesión de voz de Muse (muse_chat.c, muse_account_api.c,
+            muse_chat_session.cpp) por canela_chat.c: cada turno se manda a la
+            puerta de voz de canela-web y la respuesta llega en MP3 y se habla.
+            Configuración por USB con los comandos de consola canelita.*.
+
     config MUSE_HATCH
         bool "Muse's own voice session"
         depends on MUSE_ENABLED

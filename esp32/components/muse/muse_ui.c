@@ -130,7 +130,7 @@ static bool s_ready;
 static float s_level;
 static int s_shown_state = -1;
 static const char *s_shown_name;
-static const char *s_idle_name = "READY";   /* idle's label: set by the Wi-Fi state */
+static const char *s_idle_name = "LISTA";   /* idle's label: set by the Wi-Fi state */
 static int s_shown_lit = -1;
 static uint32_t s_shown_accent;
 static bool s_meter_visible = true;
@@ -167,11 +167,11 @@ static int s_muse_y;            /* and now */
 static int s_from_px, s_from_y, s_to_px, s_to_y;
 
 static const char *const MODE_NAMES[MUSE_MODE_COUNT] = {
-    [MUSE_MODE_BOOT] = "WAKING UP",
-    [MUSE_MODE_IDLE] = "READY",
-    [MUSE_MODE_LISTENING] = "LISTENING",
-    [MUSE_MODE_THINKING] = "THINKING",
-    [MUSE_MODE_SPEAKING] = "SPEAKING",
+    [MUSE_MODE_BOOT] = "DESPERTANDO",
+    [MUSE_MODE_IDLE] = "LISTA",
+    [MUSE_MODE_LISTENING] = "ESCUCHANDO",
+    [MUSE_MODE_THINKING] = "PENSANDO",
+    [MUSE_MODE_SPEAKING] = "HABLANDO",
     [MUSE_MODE_ERROR] = "ERROR",
     [MUSE_MODE_OFF] = "GOODBYE",
 };
@@ -522,7 +522,7 @@ static void on_speaker_event(lv_event_t *e)
         break;
     case LV_EVENT_SHORT_CLICKED:
         if (idle) {
-            muse_state_set_caption(on ? "HOLD TO MUTE" : "HOLD TO UNMUTE");
+            muse_state_set_caption(on ? "MANTEN PARA SILENCIAR" : "MANTEN PARA ACTIVAR");
         }
         break;
     case LV_EVENT_RELEASED:
@@ -1157,13 +1157,13 @@ static const char *idle_name(muse_wifi_state_t wifi)
         joined = true;
         return MODE_NAMES[MUSE_MODE_IDLE];
     case MUSE_WIFI_OFF:
-        return "WI-FI OFF";
+        return "WI-FI APAGADO";
     case MUSE_WIFI_NO_NETWORK:
-        return "SET UP WI-FI";
+        return "CONFIGURA EL WI-FI";
     case MUSE_WIFI_NOT_NEARBY:
-        return "NO WI-FI";   /* none of the saved networks is in range */
+        return "SIN WI-FI";   /* none of the saved networks is in range */
     default:
-        return joined ? "RECONNECTING" : "CONNECTING";
+        return joined ? "RECONECTANDO" : "CONECTANDO";
     }
 }
 
@@ -1259,7 +1259,7 @@ static void update_chrome(float now)
     if (s_speaker && paired == lv_obj_has_flag(s_speaker, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_set_flag(s_speaker, LV_OBJ_FLAG_HIDDEN, !paired);
     }
-    /* Unpaired, a press only says "SET UP MUSE FIRST", so the mic goes too.
+    /* Unpaired, a press only says "CONFIGURA CANELITA", so the mic goes too.
      * While a reply's layout is up it decides; that's only ever paired. */
     if (s_answer < 0 && paired == lv_obj_has_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_set_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN, !paired);
@@ -1305,7 +1305,7 @@ static void update_power(float now)
     muse_power_t p = muse_state_power();
     char buf[32];
     if (p.battery_pct < 0) {
-        strlcpy(buf, p.usb ? (s_small ? "USB" : "USB POWER") : "", sizeof(buf));
+        strlcpy(buf, p.usb ? (s_small ? "USB" : "CARGANDO POR USB") : "", sizeof(buf));
     } else if (s_small) {
         snprintf(buf, sizeof(buf), "%s%d%%", p.charging ? "+" : "", p.battery_pct);
     } else if (p.charging) {
