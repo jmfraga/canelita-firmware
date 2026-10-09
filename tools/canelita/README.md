@@ -123,7 +123,69 @@ La interfaz corre con la cara de Canela a 320 px y 25 cuadros por segundo. El
 aviso `gpio_install_isr_service(540): GPIO isr service already installed`
 viene del SDK original y no tiene efecto.
 
-## Siguiente paso
+## canelita conversa con Canela (8 de octubre de 2026)
 
-Reemplazar la capa de Muse (nube `api.muse.ai`) por un push-to-talk contra
-`canela-web`, y traducir los letreros de la interfaz.
+`esp32/components/muse/canela_chat.c` reemplaza la sesión de Muse cuando
+`CONFIG_CANELITA_CHAT` está activo (lo está por omisión con PSRAM). El botón
+graba, la placa manda el WAV a `https://canela.docfraga.com/v1/agentes/canela/voz`
+con los dos secretos de Cloudflare Access y el token del dispositivo, y habla la
+respuesta de Canela por su bocina. La cara pasa por ESCUCHANDO → PENSANDO →
+HABLANDO. Diseño completo en la especificación de `canela-web` (privada).
+
+### Configurar la placa
+
+Los secretos viven en archivos **locales** de la laptop, nunca en este repo:
+
+```
+~/.canelita/cf-access.env   CANELITA_CF_ACCESS_CLIENT_ID / _SECRET
+~/.canelita/device-token    token del dispositivo
+~/.canelita/wifi.tsv        una red por línea: SSID<TAB>contraseña
+```
+
+```sh
+python configurar.py        # con el entorno de ESP-IDF (trae pyserial)
+```
+
+Graba todo en la NVS de la placa y sólo imprime confirmaciones con el largo de
+cada valor. Las redes se guardan por el mismo camino que la pantalla de ajustes
+(hasta 8). La configuración sobrevive a reflasheos; `erase-flash` la borra.
+
+### Consola por USB
+
+```sh
+python consola.py ">canelita.show"     # estado: configurada, red, IP, lista
+python consola.py ">canelita.scan"     # redes que ve la placa (sólo 2.4 GHz)
+python prueba_ptt.py "Canela, ¿qué hora es?"   # aprieta el botón por USB y la Mac habla
+```
+
+⚠️ **Un comando debe empezar con `>`.** Fuera de una línea `>…`, la consola toma
+cada carácter como una tecla de banco de pruebas: `d`/`u` aprietan y sueltan el
+botón de hablar, `a`/`s` mueven y seleccionan en el menú, `z`/`w` duermen y
+despiertan. Mandar un secreto sin `>` lo convierte en pulsaciones sueltas.
+
+### Trampas que costaron tiempo
+
+- **TLS con Cloudflare:** el certificado de `canela.docfraga.com` (Google Trust
+  Services) viaja con GTS Root R4 firmada por *GlobalSign Root CA* (R1), que ya no
+  está en el paquete de ESP-IDF 6. Se resuelve con
+  `MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY`, que `CANELITA_CHAT` activa con
+  `select`. No se fija un certificado a mano: Cloudflare rota de autoridad.
+- **Cambiar Kconfig no basta:** el `sdkconfig` generado en `build-175c/` manda.
+  Bórralo y recompila.
+- **Pila:** minimp3 pone ~16 KB en la pila. Los turnos corren en una tarea
+  permanente con 48 KB de pila en PSRAM (el patrón de Muse); una tarea con pila
+  en PSRAM no puede borrarse a sí misma.
+- **Acentos:** las fuentes Montserrat de LVGL sólo traen ASCII. Los subtítulos se
+  transliteran ("Sí" → "Si"); la voz no cambia.
+- **`chat=` por consola no suena:** los turnos escritos no pasan por
+  `muse_voice`; sólo prueban la red y la decodificación. Para probar la voz usa
+  `prueba_ptt.py`.
+
+### Pendiente
+
+- Bloqueo con PIN (especificación §6.1).
+- La placa sigue anunciándose por BLE como `MuseGadget-…` para emparejarse con
+  Muse: inofensivo (exige apretar el botón), pero hay que apagarlo.
+- Fuente con acentos para los subtítulos.
+- Latencia: ~11 s en respuestas cortas, más en las largas (la voz se genera
+  completa antes de reproducirse).
