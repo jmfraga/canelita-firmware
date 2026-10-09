@@ -11,9 +11,10 @@
  * cambian: muse_voice ya sabe reproducir lo que devuelve muse_hatch_turn_read,
  * sólo que la sesión de Muse respondía con texto y nunca entregaba audio.
  *
- * Un turno: se acumula el PCM (16 kHz mono) mientras se habla; al soltar, una
- * tarea arma un WAV, lo manda por HTTPS con los tres secretos (dos de
- * Cloudflare Access y el token del dispositivo) y pide la respuesta POR FRASES
+ * Un turno: al apretar el botón, una tarea abre la conexión HTTPS con los tres
+ * secretos (dos de Cloudflare Access y el token del dispositivo) y sube el PCM
+ * (16 kHz mono) MIENTRAS se habla, en trozos (chunked); al soltar sólo falta
+ * el último pedazo. Luego pide la respuesta POR FRASES
  * (stream=1): cada frase llega como MP3 propio, se decodifica con minimp3, se
  * pasa de 24 a 16 kHz y se agrega al audio del turno, así que la bocina empieza
  * con la primera frase mientras el servidor genera las demás.
@@ -100,8 +101,10 @@ static volatile uint32_t s_gen;          /* sube con cada turno/cancelación */
 
 static struct {
     bool talking;
+    bool ended;                          /* se soltó el botón: ya no llega más voz */
     int16_t *pcm;                        /* lo que se dijo, 16 kHz mono */
     size_t n;
+    int64_t end_us;                      /* cuándo se soltó */
     int16_t *out;                        /* la respuesta, 16 kHz mono; crece por frases */
     size_t out_n, out_rd, out_cap;
     char text[TEXT_MAX];                 /* para los subtítulos */
@@ -125,7 +128,7 @@ static void free_turn_locked(void)
     s_turn.n = s_turn.out_n = s_turn.out_rd = s_turn.out_cap = 0;
     s_turn.text[0] = 0;
     s_turn.nseg = 0;
-    s_turn.talking = false;
+    s_turn.talking = s_turn.ended = false;
 }
 
 /* ---- Subtítulos en ASCII ---- */
@@ -157,18 +160,6 @@ static void ascii_es(char *s)
         }
     }
     *w = 0;
-}
-
-/* ---- WAV ---- */
-
-static void wav_header(uint8_t h[44], uint32_t frames)
-{
-    uint32_t data = frames * 2, riff = 36 + data, rate = MIC_RATE, br = MIC_RATE * 2;
-    memcpy(h, "RIFF", 4); memcpy(h + 4, &riff, 4); memcpy(h + 8, "WAVEfmt ", 8);
-    uint32_t fmt_len = 16; uint16_t pcm = 1, ch = 1, align = 2, bits = 16;
-    memcpy(h + 16, &fmt_len, 4); memcpy(h + 20, &pcm, 2); memcpy(h + 22, &ch, 2);
-    memcpy(h + 24, &rate, 4); memcpy(h + 28, &br, 4); memcpy(h + 32, &align, 2);
-    memcpy(h + 34, &bits, 2); memcpy(h + 36, "data", 4); memcpy(h + 40, &data, 4);
 }
 
 /* ---- MP3 → PCM 16 kHz ---- */
@@ -222,7 +213,9 @@ static int16_t *mp3_to_pcm(const uint8_t *mp3, size_t len, size_t *out_frames)
 
 /* ---- La petición ---- */
 
-typedef struct { int16_t *pcm; size_t n; char *texto; uint32_t gen; } job_t;
+/* Un turno para la tarea de red: de voz (texto NULL; el audio lo va dejando
+ * muse_hatch_turn_audio en s_turn) o escrito por la consola. */
+typedef struct { char *texto; uint32_t gen; } job_t;
 
 static const char *http_error(int status)
 {
@@ -245,6 +238,49 @@ static bool write_all(esp_http_client_handle_t c, const void *p, size_t n)
         b += w; n -= w;
     }
     return true;
+}
+
+/* Un trozo del cuerpo chunked (esp_http_client no los arma solo). */
+static bool write_chunk(esp_http_client_handle_t c, const void *p, size_t n)
+{
+    if (!n) return true;
+    char hx[12];
+    snprintf(hx, sizeof(hx), "%x\r\n", (unsigned)n);
+    return write_all(c, hx, strlen(hx)) && write_all(c, p, n) && write_all(c, "\r\n", 2);
+}
+
+/* Sube la voz conforme se graba, hasta que se suelta el botón. false si el
+ * turno se canceló (*fail queda NULL) o se cortó el envío. */
+#define UP_FRAMES 4096                   /* 8 KB por trozo */
+static bool subir_voz(esp_http_client_handle_t c, uint32_t gen, const char **fail)
+{
+    int16_t *buf = heap_caps_malloc(UP_FRAMES * 2, BIG);
+    if (!buf) { *fail = "SIN MEMORIA"; return false; }
+    size_t sent = 0;
+    int64_t limite = esp_timer_get_time() + (int64_t)(MAX_SECS + 15) * 1000000;
+    bool ok = true;
+    for (;;) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        if (gen != s_gen || !s_turn.pcm) { xSemaphoreGive(s_lock); ok = false; break; }
+        size_t take = s_turn.n - sent;
+        take = take < UP_FRAMES ? take : UP_FRAMES;
+        memcpy(buf, s_turn.pcm + sent, take * 2);
+        bool ended = s_turn.ended;
+        xSemaphoreGive(s_lock);
+        if (take) {
+            if (!write_chunk(c, buf, take * 2)) { *fail = "SE CORTO EL ENVIO"; ok = false; break; }
+            sent += take;
+        } else if (ended) {
+            break;
+        } else if (esp_timer_get_time() > limite) {
+            *fail = "SE CORTO EL ENVIO"; ok = false; break;
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    }
+    heap_caps_free(buf);
+    if (ok) ESP_LOGI(TAG, "voz subida: %.1fs", (double)sent / MIC_RATE);
+    return ok;
 }
 
 /* Lee exactamente n bytes del cuerpo (que puede venir en trozos). */
@@ -294,22 +330,16 @@ static void procesar(job_t *job)
     char url[200];
     snprintf(url, sizeof(url), "%s/v1/agentes/" AGENTE "/voz", s_url);
 
-    /* Cuerpo multipart: "stream"=1 (respuesta por frases) y un campo "audio"
-     * (WAV) o "texto". */
-    char head[384], tail[48];
-    uint8_t wav[44];
-    size_t body_len;
+    /* Cuerpo multipart, chunked (no se sabe el largo hasta soltar): "stream"=1
+     * (respuesta por frases) y "pcm" (la voz cruda) o "texto". */
+    char head[384];
+    static const char tail[] = "\r\n--" BOUNDARY "--\r\n";
     if (job->texto) {
         snprintf(head, sizeof(head), STREAM_PART "--" BOUNDARY "\r\nContent-Disposition: form-data; name=\"texto\"\r\n\r\n");
-        body_len = strlen(head) + strlen(job->texto);
     } else {
-        snprintf(head, sizeof(head), STREAM_PART "--" BOUNDARY "\r\nContent-Disposition: form-data; name=\"audio\"; "
-                 "filename=\"voz.wav\"\r\nContent-Type: audio/wav\r\n\r\n");
-        wav_header(wav, job->n);
-        body_len = strlen(head) + sizeof(wav) + job->n * 2;
+        snprintf(head, sizeof(head), STREAM_PART "--" BOUNDARY "\r\nContent-Disposition: form-data; name=\"pcm\"; "
+                 "filename=\"voz.pcm\"\r\nContent-Type: application/octet-stream\r\n\r\n");
     }
-    snprintf(tail, sizeof(tail), "\r\n--" BOUNDARY "--\r\n");
-    body_len += strlen(tail);
 
     esp_http_client_config_t cfg = {
         .url = url, .method = HTTP_METHOD_POST, .timeout_ms = 90000,
@@ -324,12 +354,21 @@ static void procesar(job_t *job)
     esp_http_client_set_header(c, "Content-Type", "multipart/form-data; boundary=" BOUNDARY);
 
     int64_t t0 = esp_timer_get_time();
-    if (esp_http_client_open(c, body_len) != ESP_OK) { fail = "SIN CONEXION"; goto done; }
-    bool ok = write_all(c, head, strlen(head));
-    if (job->texto) ok = ok && write_all(c, job->texto, strlen(job->texto));
-    else ok = ok && write_all(c, wav, sizeof(wav)) && write_all(c, job->pcm, job->n * 2);
-    ok = ok && write_all(c, tail, strlen(tail));
+    if (esp_http_client_open(c, -1) != ESP_OK) { fail = "SIN CONEXION"; goto done; }
+    ESP_LOGI(TAG, "conectada en %.1fs", (esp_timer_get_time() - t0) / 1e6);
+    bool ok = write_chunk(c, head, strlen(head));
+    if (job->texto) ok = ok && write_chunk(c, job->texto, strlen(job->texto));
+    else if (ok && !subir_voz(c, job->gen, &fail)) goto done;
+    ok = ok && write_chunk(c, tail, strlen(tail)) && write_all(c, "0\r\n\r\n", 5);
     if (!ok) { fail = "SE CORTO EL ENVIO"; goto done; }
+    if (!job->texto) {
+        /* De aquí en adelante los tiempos cuentan desde que se soltó el botón. */
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        if (job->gen == s_gen && s_turn.end_us) t0 = s_turn.end_us;
+        xSemaphoreGive(s_lock);
+        ESP_LOGI(TAG, "envío completo %.2fs después de soltar", (esp_timer_get_time() - t0) / 1e6);
+    }
+    if (job->gen == s_gen) emit(MUSE_HATCH_EV_SENT, "");
 
     esp_http_client_fetch_headers(c);
     int status = esp_http_client_get_status_code(c);
@@ -424,7 +463,6 @@ done:
     heap_caps_free(frame);
     free(reply_utf8);
     heap_caps_free(out);
-    heap_caps_free(job->pcm);
     free(job->texto);
     free(job);
 }
@@ -443,13 +481,13 @@ static void worker_loop(void *arg)
     }
 }
 
-static void launch(int16_t *pcm, size_t n, char *texto)
+static void launch(char *texto)
 {
     job_t *job = calloc(1, sizeof(*job));
-    if (!job) { heap_caps_free(pcm); free(texto); emit(MUSE_HATCH_EV_ERROR, "SIN MEMORIA"); return; }
-    job->pcm = pcm; job->n = n; job->texto = texto; job->gen = s_gen;
+    if (!job) { free(texto); emit(MUSE_HATCH_EV_ERROR, "SIN MEMORIA"); return; }
+    job->texto = texto; job->gen = s_gen;
     if (!s_jobs || xQueueSend(s_jobs, &job, 0) != pdTRUE) {
-        heap_caps_free(pcm); free(texto); free(job);
+        free(texto); free(job);
         emit(MUSE_HATCH_EV_ERROR, "OCUPADA, INTENTA DE NUEVO");
     }
 }
@@ -513,18 +551,24 @@ void muse_hatch_turn_begin(void)
     xQueueReset(s_events);
     s_turn.pcm = heap_caps_malloc(PCM_CAP * 2, BIG);
     s_turn.talking = s_turn.pcm != NULL;
+    s_turn.end_us = 0;
     xSemaphoreGive(s_lock);
-    if (!s_turn.pcm) emit(MUSE_HATCH_EV_ERROR, "SIN MEMORIA");
+    if (!s_turn.pcm) { emit(MUSE_HATCH_EV_ERROR, "SIN MEMORIA"); return; }
+    launch(NULL);                        /* conecta y sube mientras se habla */
 }
 
 size_t muse_hatch_turn_audio_wait(const int16_t *pcm, size_t frames, int wait_ms)
 {
     (void)wait_ms;
-    if (!s_turn.talking) return 0;
-    size_t take = PCM_CAP - s_turn.n < frames ? PCM_CAP - s_turn.n : frames;
-    memcpy(s_turn.pcm + s_turn.n, pcm, take * 2);
-    s_turn.n += take;
-    return frames;                       /* lo que pase del tope se descarta */
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_turn.talking && s_turn.pcm) {
+        size_t take = PCM_CAP - s_turn.n < frames ? PCM_CAP - s_turn.n : frames;
+        memcpy(s_turn.pcm + s_turn.n, pcm, take * 2);
+        s_turn.n += take;
+    }
+    bool talking = s_turn.talking;
+    xSemaphoreGive(s_lock);
+    return talking ? frames : 0;         /* lo que pase del tope se descarta */
 }
 
 void muse_hatch_turn_audio(const int16_t *pcm, size_t frames)
@@ -534,19 +578,19 @@ void muse_hatch_turn_audio(const int16_t *pcm, size_t frames)
 
 void muse_hatch_turn_end(void)
 {
+    /* La tarea de red ya está subiendo: sólo se le avisa que no viene más. */
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    bool talking = s_turn.talking;
-    int16_t *pcm = s_turn.pcm;
+    bool talking = s_turn.talking && s_turn.pcm;
     size_t n = s_turn.n;
-    s_turn.pcm = NULL; s_turn.n = 0; s_turn.talking = false;
+    s_turn.talking = false;
+    s_turn.ended = true;
+    s_turn.end_us = esp_timer_get_time();
     xSemaphoreGive(s_lock);
-    if (!talking || !pcm) {
-        heap_caps_free(pcm);
+    if (!talking) {
         emit(MUSE_HATCH_EV_ERROR, "NO SE GRABO NADA");
         return;
     }
-    ESP_LOGI(TAG, "mandando %.1fs de voz", (double)n / MIC_RATE);
-    launch(pcm, n, NULL);
+    ESP_LOGI(TAG, "soltado: %.1fs de voz", (double)n / MIC_RATE);
 }
 
 void muse_hatch_turn_cancel(void)
@@ -619,7 +663,7 @@ void muse_hatch_text_turn(char *text)
     free_turn_locked();
     xQueueReset(s_events);
     xSemaphoreGive(s_lock);
-    launch(NULL, 0, text);
+    launch(text);
 }
 
 void muse_hatch_text_cancel(void) { muse_hatch_turn_cancel(); }
