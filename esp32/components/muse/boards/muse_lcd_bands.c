@@ -47,6 +47,8 @@ static SemaphoreHandle_t s_chunk_free;   /* internal buffers not on the wire */
 static uint8_t *s_chunk[2];
 static size_t s_chunk_bytes;
 static int s_chunks_out;                 /* of the band being sent */
+static SemaphoreHandle_t s_band_done;    /* the band's last piece has gone */
+static uint32_t s_stuck;                 /* bands recovered by the timeout */
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 
 /* A piece has gone, or failed to; true if it was the band's last. */
@@ -65,7 +67,11 @@ static bool IRAM_ATTR on_chunk_sent(esp_lcd_panel_io_handle_t io, esp_lcd_panel_
     (void)ctx;
     BaseType_t woken = pdFALSE;
     xSemaphoreGiveFromISR(s_chunk_free, &woken);
-    bool yield = chunk_done() && esp_lv_adapter_display_notify_color_trans_done_from_isr(s_disp);
+    bool yield = false;
+    if (chunk_done()) {
+        xSemaphoreGiveFromISR(s_band_done, &woken);
+        yield = esp_lv_adapter_display_notify_color_trans_done_from_isr(s_disp);
+    }
     return yield || woken == pdTRUE;
 }
 
@@ -100,6 +106,7 @@ static void send_bands(void *arg)
         int rows = s_chunk_bytes / row & ~1;
         /* LVGL sends no more until this band is done, so nothing is still
          * counting down. */
+        xSemaphoreTake(s_band_done, 0);  /* a late one from a recovered band */
         s_chunks_out = (b.y2 - b.y1 + rows - 1) / rows;
         for (int y = b.y1; y < b.y2; y += rows) {
             int h = b.y2 - y < rows ? b.y2 - y : rows;
@@ -109,10 +116,32 @@ static void send_bands(void *arg)
             if (err != ESP_OK) {
                 xSemaphoreGive(s_chunk_free);
                 if (chunk_done()) {
+                    xSemaphoreGive(s_band_done);
                     lv_display_flush_ready(s_disp);
                 }
             }
             k ^= 1;
+        }
+        /*
+         * canelita: a band whose last piece never reports back left LVGL
+         * waiting in wait_for_flushing() for good: the face and the voice
+         * froze while the console lived on (seen after a few turns, as the
+         * HTTPS turn started). Past a second, log what was left, free the
+         * buffers and let LVGL go on: a skipped frame, not a dead screen.
+         */
+        if (xSemaphoreTake(s_band_done, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            portENTER_CRITICAL(&s_lock);
+            int left = s_chunks_out;
+            s_chunks_out = 0;
+            portEXIT_CRITICAL(&s_lock);
+            s_stuck++;
+            ESP_LOGE(TAG, "band %d,%d-%d,%d stuck: %d piece(s) unreported, %u free buffer(s); recovered (%lu so far)",
+                     b.x1, b.y1, b.x2, b.y2, left, (unsigned)uxSemaphoreGetCount(s_chunk_free),
+                     (unsigned long)s_stuck);
+            while (uxSemaphoreGetCount(s_chunk_free) < 2) {
+                xSemaphoreGive(s_chunk_free);
+            }
+            lv_display_flush_ready(s_disp);
         }
     }
 }
@@ -128,9 +157,10 @@ lv_display_t *muse_lcd_bands_register(esp_lv_adapter_display_config_t cfg, int l
     s_call_lock = xSemaphoreCreateMutex();
     s_call_done = xSemaphoreCreateBinary();
     s_chunk_free = xSemaphoreCreateCounting(2, 2);
+    s_band_done = xSemaphoreCreateBinary();
     s_chunk[0] = heap_caps_malloc(chunk_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     s_chunk[1] = heap_caps_malloc(chunk_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (!s_bands || !s_call_lock || !s_call_done || !s_chunk_free || !s_chunk[0] || !s_chunk[1] ||
+    if (!s_bands || !s_call_lock || !s_call_done || !s_chunk_free || !s_band_done || !s_chunk[0] || !s_chunk[1] ||
         xTaskCreatePinnedToCore(send_bands, "lcd_send", 2560, NULL, MUSE_UI_PRIORITY + 1, NULL, MUSE_UI_CORE) != pdPASS) {
         return NULL;
     }

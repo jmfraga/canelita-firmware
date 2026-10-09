@@ -156,6 +156,8 @@ cada valor. Las redes se guardan por el mismo camino que la pantalla de ajustes
 python consola.py ">canelita.show"     # estado: configurada, red, IP, lista
 python consola.py ">canelita.scan"     # redes que ve la placa (sólo 2.4 GHz)
 python prueba_ptt.py "Canela, ¿qué hora es?"   # aprieta el botón por USB y la Mac habla
+python consola.py ">canelita.vol 70"   # volumen de la bocina, 0-100
+python consola.py ">canelita.trazas"   # pila de todas las tareas (diagnóstico)
 ```
 
 ⚠️ **Un comando debe empezar con `>`.** Fuera de una línea `>…`, la consola toma
@@ -177,6 +179,23 @@ despiertan. Mandar un secreto sin `>` lo convierte en pulsaciones sueltas.
   en PSRAM no puede borrarse a sí misma.
 - **Acentos:** las fuentes Montserrat de LVGL sólo traen ASCII. Los subtítulos se
   transliteran ("Sí" → "Si"); la voz no cambia.
+- **Vigilantes apagados = congelamiento mudo.** El SDK trae apagados los
+  vigilantes de interrupciones y de tareas. Así, la placa se congeló al cuarto
+  turno de una prueba (pantalla y voz) sin decir nada, mientras el latido y la
+  consola seguían vivos. Ahora vienen encendidos en
+  `devices/sdkconfig.muse-waveshare-s3-175c`. Si vuelve a pasar, la consola muestra
+  `Guru Meditation` con la pila de ambos núcleos y la placa se reinicia sola.
+  Decodificar con
+  `xtensa-esp32s3-elf-addr2line -pfiaC -e build-175c/muse-gadget.elf <direcciones>`.
+- **El congelamiento era la pantalla.** El vigilante de tareas lo atrapó: la
+  tarea `lvgl` daba vueltas en `wait_for_flushing()` (lv_refr.c). Una franja de
+  pantalla cuyo último trozo nunca avisó "enviado" dejaba a LVGL esperando para
+  siempre. Pasó al empezar el turno HTTPS, cuando la memoria interna DMA baja a
+  ~24 KB. `boards/muse_lcd_bands.c` ahora espera cada franja 1 s como máximo; si
+  no llega el aviso, escribe `lcd_bands: band … stuck` en la consola, libera los
+  buffers y deja seguir a LVGL. Se pierde un cuadro, no la pantalla. La causa de
+  fondo (aviso perdido o conteo de trozos) sigue abierta: ese mensaje es la
+  pista.
 - **`chat=` por consola no suena:** los turnos escritos no pasan por
   `muse_voice`; sólo prueban la red y la decodificación. Para probar la voz usa
   `prueba_ptt.py`.
