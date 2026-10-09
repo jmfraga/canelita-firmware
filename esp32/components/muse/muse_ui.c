@@ -1311,7 +1311,7 @@ static void update_power(float now)
     } else if (p.charging) {
         snprintf(buf, sizeof(buf), "CHARGING %d%%", p.battery_pct);
     } else {
-        snprintf(buf, sizeof(buf), "BATTERY %d%%", p.battery_pct);
+        snprintf(buf, sizeof(buf), "BATERIA %d%%", p.battery_pct);
     }
     if (strcmp(buf, lv_label_get_text(s_power_lbl)) != 0) {
         lv_label_set_text(s_power_lbl, buf);
