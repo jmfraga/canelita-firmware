@@ -50,6 +50,9 @@
 
 static const char *TAG = "canelita";
 
+/* De boards/muse_lcd_bands.c; débil porque no todas las placas lo usan. */
+extern void muse_lcd_bands_status(char *out, size_t cap) __attribute__((weak));
+
 #define NS             "canelita"
 #define AGENTE         "canela"
 #define MIC_RATE       16000
@@ -739,6 +742,13 @@ bool canela_console(char *line)
         fflush(stdout);
         esp_backtrace_print_all_tasks(24);
         printf("@canelita.trazas fin\n");
+        return true;
+    }
+    if (!strcmp(cmd, "lcd")) {
+        /* Qué hace la pantalla: si LVGL espera y en qué paso va el envío de franjas. */
+        char st[160] = "sin envio por franjas en esta placa";
+        if (muse_lcd_bands_status) muse_lcd_bands_status(st, sizeof(st));
+        printf("@canelita.lcd %s\n", st);
         return true;
     }
     if (!strncmp(cmd, "vol ", 4)) {

@@ -56,3 +56,6 @@ lv_display_t *muse_lcd_bands_register(esp_lv_adapter_display_config_t cfg, int l
  * this, whichever core it's called from.
  */
 void muse_lcd_bands_run(void (*fn)(void *arg), void *arg);
+
+/* canelita: what the band sender is doing, for the console (canelita.lcd). */
+void muse_lcd_bands_status(char *out, size_t cap);

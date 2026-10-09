@@ -193,9 +193,14 @@ despiertan. Mandar un secreto sin `>` lo convierte en pulsaciones sueltas.
   siempre. Pasó al empezar el turno HTTPS, cuando la memoria interna DMA baja a
   ~24 KB. `boards/muse_lcd_bands.c` ahora espera cada franja 1 s como máximo; si
   no llega el aviso, escribe `lcd_bands: band … stuck` en la consola, libera los
-  buffers y deja seguir a LVGL. Se pierde un cuadro, no la pantalla. La causa de
-  fondo (aviso perdido o conteo de trozos) sigue abierta: ese mensaje es la
-  pista.
+  buffers y deja seguir a LVGL. Se pierde un cuadro, no la pantalla.
+  **No bastó:** el 9 de octubre se volvió a congelar sin ese mensaje (el envío
+  estaba atorado antes, esperando un buffer libre o dentro del driver). Ahora
+  la espera del buffer también tiene límite de 1 s, y como último recurso, si
+  LVGL lleva más de 3 s esperando a la pantalla o el envío lleva más de 3 s en
+  un paso, la placa escribe `lcd_bands: screen stuck … restarting` y se
+  reinicia sola. `python consola.py ">canelita.lcd"` dice en qué paso va el
+  envío. La causa de fondo sigue abierta: esos mensajes son la pista.
 - **`chat=` por consola no suena:** los turnos escritos no pasan por
   `muse_voice`; sólo prueban la red y la decodificación. Para probar la voz usa
   `prueba_ptt.py`.

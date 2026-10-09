@@ -22,6 +22,8 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -47,9 +49,77 @@ static SemaphoreHandle_t s_chunk_free;   /* internal buffers not on the wire */
 static uint8_t *s_chunk[2];
 static size_t s_chunk_bytes;
 static int s_chunks_out;                 /* of the band being sent */
+static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_band_done;    /* the band's last piece has gone */
 static uint32_t s_stuck;                 /* bands recovered by the timeout */
-static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
+
+/*
+ * canelita: where lcd_send is, and since when. A screen that stays stuck past
+ * STUCK_REBOOT_US in any step but waiting for work restarts the board: a few
+ * seconds of reboot instead of a frozen face (seen with the face and voice
+ * dead, the console alive, and lvgl spinning in wait_for_flushing()).
+ */
+enum { ST_IDLE, ST_CHUNK_FREE, ST_DRAW, ST_BAND_DONE, ST_CALL };
+static const char *const STAGE_NAME[] = { "idle", "chunk_free", "draw_bitmap", "band_done", "call" };
+static volatile int s_stage = ST_IDLE;
+static volatile int64_t s_stage_us;
+static volatile int64_t s_wait_us;       /* LVGL waiting on the panel since (0: not) */
+#define STUCK_REBOOT_US (3 * 1000000)
+
+static void on_flush_wait(lv_event_t *e)
+{
+    s_wait_us = lv_event_get_code(e) == LV_EVENT_FLUSH_WAIT_START ? esp_timer_get_time() : 0;
+}
+
+static void stage(int st)
+{
+    s_stage = st;
+    s_stage_us = esp_timer_get_time();
+}
+
+static void watch_stuck(void *arg)
+{
+    (void)arg;
+    int st = s_stage;
+    int64_t now = esp_timer_get_time(), since = s_stage_us, wait = s_wait_us;
+    bool sender_stuck = st != ST_IDLE && now - since > STUCK_REBOOT_US;
+    bool lvgl_stuck = wait && now - wait > STUCK_REBOOT_US;
+    if (sender_stuck || lvgl_stuck) {
+        ESP_LOGE(TAG, "screen stuck: lvgl waiting %.1fs, sender in %s for %.1fs (chunks_out=%d free=%u "
+                 "recovered=%lu): restarting",
+                 wait ? (now - wait) / 1e6 : 0.0, STAGE_NAME[st], (now - since) / 1e6, s_chunks_out,
+                 (unsigned)uxSemaphoreGetCount(s_chunk_free), (unsigned long)s_stuck);
+        vTaskDelay(pdMS_TO_TICKS(100));   /* let the log out */
+        esp_restart();
+    }
+}
+
+void muse_lcd_bands_status(char *out, size_t cap)
+{
+    int64_t wait = s_wait_us;
+    snprintf(out, cap, "lvgl_wait=%.1fs stage=%s for %.1fs chunks_out=%d free=%u recovered=%lu",
+             wait ? (esp_timer_get_time() - wait) / 1e6 : 0.0,
+             STAGE_NAME[s_stage], (esp_timer_get_time() - s_stage_us) / 1e6, s_chunks_out,
+             s_chunk_free ? (unsigned)uxSemaphoreGetCount(s_chunk_free) : 0, (unsigned long)s_stuck);
+}
+
+/* Past a second without word from the panel: log what was left, free the
+ * buffers and let LVGL go on (a skipped frame, not a dead screen). */
+static void recover(const band_t *b, const char *where)
+{
+    portENTER_CRITICAL(&s_lock);
+    int left = s_chunks_out;
+    s_chunks_out = 0;
+    portEXIT_CRITICAL(&s_lock);
+    s_stuck++;
+    ESP_LOGE(TAG, "band %d,%d-%d,%d stuck in %s: %d piece(s) unreported, %u free buffer(s); recovered (%lu so far)",
+             b->x1, b->y1, b->x2, b->y2, where, left, (unsigned)uxSemaphoreGetCount(s_chunk_free),
+             (unsigned long)s_stuck);
+    while (uxSemaphoreGetCount(s_chunk_free) < 2) {
+        xSemaphoreGive(s_chunk_free);
+    }
+    lv_display_flush_ready(s_disp);
+}
 
 /* A piece has gone, or failed to; true if it was the band's last. */
 static bool IRAM_ATTR chunk_done(void)
@@ -96,8 +166,10 @@ static void send_bands(void *arg)
     int k = 0;
     band_t b;
     for (;;) {
+        stage(ST_IDLE);
         xQueueReceive(s_bands, &b, portMAX_DELAY);
         if (!b.data) {
+            stage(ST_CALL);
             s_call(s_call_arg);
             xSemaphoreGive(s_call_done);
             continue;
@@ -108,10 +180,17 @@ static void send_bands(void *arg)
          * counting down. */
         xSemaphoreTake(s_band_done, 0);  /* a late one from a recovered band */
         s_chunks_out = (b.y2 - b.y1 + rows - 1) / rows;
+        bool lost = false;
         for (int y = b.y1; y < b.y2; y += rows) {
             int h = b.y2 - y < rows ? b.y2 - y : rows;
-            xSemaphoreTake(s_chunk_free, portMAX_DELAY);
+            stage(ST_CHUNK_FREE);
+            if (xSemaphoreTake(s_chunk_free, pdMS_TO_TICKS(1000)) != pdTRUE) {
+                recover(&b, "chunk_free");   /* a piece before never reported back */
+                lost = true;
+                break;
+            }
             memcpy(s_chunk[k], b.data + (size_t)(y - b.y1) * row, h * row);
+            stage(ST_DRAW);
             esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, b.x1, y, b.x2, y + h, s_chunk[k]);
             if (err != ESP_OK) {
                 xSemaphoreGive(s_chunk_free);
@@ -122,26 +201,11 @@ static void send_bands(void *arg)
             }
             k ^= 1;
         }
-        /*
-         * canelita: a band whose last piece never reports back left LVGL
-         * waiting in wait_for_flushing() for good: the face and the voice
-         * froze while the console lived on (seen after a few turns, as the
-         * HTTPS turn started). Past a second, log what was left, free the
-         * buffers and let LVGL go on: a skipped frame, not a dead screen.
-         */
-        if (xSemaphoreTake(s_band_done, pdMS_TO_TICKS(1000)) != pdTRUE) {
-            portENTER_CRITICAL(&s_lock);
-            int left = s_chunks_out;
-            s_chunks_out = 0;
-            portEXIT_CRITICAL(&s_lock);
-            s_stuck++;
-            ESP_LOGE(TAG, "band %d,%d-%d,%d stuck: %d piece(s) unreported, %u free buffer(s); recovered (%lu so far)",
-                     b.x1, b.y1, b.x2, b.y2, left, (unsigned)uxSemaphoreGetCount(s_chunk_free),
-                     (unsigned long)s_stuck);
-            while (uxSemaphoreGetCount(s_chunk_free) < 2) {
-                xSemaphoreGive(s_chunk_free);
-            }
-            lv_display_flush_ready(s_disp);
+        /* canelita: a band whose last piece never reports back used to leave
+         * LVGL waiting in wait_for_flushing() for good. */
+        stage(ST_BAND_DONE);
+        if (!lost && xSemaphoreTake(s_band_done, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            recover(&b, "band_done");
         }
     }
 }
@@ -164,6 +228,11 @@ lv_display_t *muse_lcd_bands_register(esp_lv_adapter_display_config_t cfg, int l
         xTaskCreatePinnedToCore(send_bands, "lcd_send", 2560, NULL, MUSE_UI_PRIORITY + 1, NULL, MUSE_UI_CORE) != pdPASS) {
         return NULL;
     }
+    const esp_timer_create_args_t watch = { .callback = watch_stuck, .name = "lcd_watch" };
+    esp_timer_handle_t watch_timer;
+    if (esp_timer_create(&watch, &watch_timer) == ESP_OK) {
+        esp_timer_start_periodic(watch_timer, 500 * 1000);
+    }
     const esp_lcd_panel_io_callbacks_t io_cbs = { .on_color_trans_done = on_chunk_sent };
     esp_lcd_panel_io_register_event_callbacks(cfg.panel_io, &io_cbs, NULL);
     esp_lv_adapter_set_default_display_idf_callback_registration_enabled(false);
@@ -176,6 +245,8 @@ lv_display_t *muse_lcd_bands_register(esp_lv_adapter_display_config_t cfg, int l
         return NULL;
     }
     lv_display_set_color_format(s_disp, LV_COLOR_FORMAT_RGB565_SWAPPED);
+    lv_display_add_event_cb(s_disp, on_flush_wait, LV_EVENT_FLUSH_WAIT_START, NULL);
+    lv_display_add_event_cb(s_disp, on_flush_wait, LV_EVENT_FLUSH_WAIT_FINISH, NULL);
     const esp_lv_adapter_draw_bitmap_callbacks_t draw_cbs = { .custom_draw_bitmap = queue_band };
     esp_lv_adapter_set_draw_bitmap_callbacks(s_disp, &draw_cbs, NULL);
     return s_disp;
