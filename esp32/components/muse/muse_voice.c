@@ -47,6 +47,13 @@ static const char *TAG = "muse_voice";
 #define TAIL_FRAMES (MUSE_AUDIO_RATE * 12 / 100)   /* capture lag + poll interval, stops before the release click */
 #define MAX_FRAMES (MUSE_AUDIO_RATE * MAX_SECS)
 #define MIN_HELD_FRAMES (MUSE_AUDIO_RATE * 3 / 10)   /* shorter presses are taps, not speech */
+#if CONFIG_CANELITA_CHAT
+/* canelita: un toque abre la llamada. Un dedo real tarda 0.2-0.3 s en soltar; se mide hasta que suelta (sin la
+ * cola de grabación), y hasta 0.45 s es toque: un turno de voz tan corto no traería nada útil. */
+#define TAP_FRAMES (MUSE_AUDIO_RATE * 45 / 100)
+#else
+#define TAP_FRAMES MIN_HELD_FRAMES
+#endif
 #if CONFIG_MUSE_BOARD_M5STACK_CARDPUTER_ADV
 #define PRE_CHUNKS 6                                   /* 120 ms; a 320 ms upload burst stalls on the ADV */
 #else
@@ -279,7 +286,7 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
     }
     size_t pre = n;
     bool released = false;
-    size_t stop_at = MAX_FRAMES;
+    size_t stop_at = MAX_FRAMES, at_release = 0;
     while (n + MUSE_AUDIO_CHUNK <= stop_at) {
         if (muse_audio_read(s_chunk, MUSE_AUDIO_CHUNK) != ESP_OK) {
             break;
@@ -321,11 +328,12 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
          */
         if (!released && got_event(MUSE_PTT_UP)) {
             released = true;
+            at_release = n;
             stop_at = n + TAIL_FRAMES < MAX_FRAMES ? n + TAIL_FRAMES : MAX_FRAMES;
         }
     }
     muse_state_set_level(0);
-    *held = n - pre;
+    *held = (released ? at_release : n) - pre;   /* lo que estuvo apretado, sin la cola tras soltar */
 
     char tail[160];
     int tl = 0;
@@ -828,7 +836,8 @@ static void live_call(void)
         if (e == CANELA_LIVE_ERROR) { motivo = canela_live_error(); break; }
         if (e == CANELA_LIVE_FIN) break;
         if (e == CANELA_LIVE_CONECTANDO && ahora - t0 > 20000000) { motivo = "NO CONTESTO CANELA"; break; }
-        if (got_event(MUSE_PTT_DOWN)) break;   /* un toque cuelga */
+        /* Un toque cuelga; el primer 0.8 s no cuenta (rebote o el soltar del toque que la abrió). */
+        if (got_event(MUSE_PTT_DOWN) && ahora - t0 > 800000) break;
         if (muse_audio_read(mic, MUSE_AUDIO_CHUNK) != ESP_OK) { motivo = "FALLO EL MICROFONO"; break; }
         if (e == CANELA_LIVE_CONECTANDO) {
             continue;
@@ -973,7 +982,7 @@ static void voice_task(void *arg)
         char why[96];
         bool ok = record(pending_down, &held, why, sizeof(why));
         pending_down = false;
-        if (held < MIN_HELD_FRAMES && !wake) {
+        if (held < TAP_FRAMES && !wake) {
             muse_hatch_turn_cancel();
             drop_rec();
             pre_reset();
