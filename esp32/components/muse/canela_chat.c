@@ -41,6 +41,7 @@
 #include "nvs.h"
 
 #include "canela_chat.h"
+#include "canela_live.h"
 #include "muse_audio.h"
 #include "muse_chat.h"
 #include "muse_chat_priv.h"
@@ -539,6 +540,13 @@ const char *muse_hatch_state_name(muse_hatch_state_t state)
     case MUSE_HATCH_UNREACHABLE: return "No conecta";
     }
     return "";
+}
+
+/* Llamada gpt-live-1 (canela_live.c) con la misma configuración que los turnos. */
+bool canela_live_abrir(void)
+{
+    if (!configured()) return false;
+    return canela_live_start(s_url, s_cf_id, s_cf_secret, s_token);
 }
 
 bool muse_hatch_ready(void)

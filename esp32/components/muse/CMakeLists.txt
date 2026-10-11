@@ -43,7 +43,7 @@ if(CONFIG_MUSE_ENABLED)
         "muse_link.c"
         "muse_ble.c")
     if(CONFIG_CANELITA_CHAT)
-        list(APPEND srcs "canela_chat.c")   # canelita: turnos hacia Canela
+        list(APPEND srcs "canela_chat.c" "canela_live.c")   # canelita: turnos y llamada live hacia Canela
     elseif(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
         list(APPEND embed "test_reply.mp3")   # muse_hatch_mp3_selftest
@@ -110,6 +110,8 @@ set(muse_priv_requires
     esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
     esp_driver_pcnt)
 list(APPEND muse_priv_requires camera)
+# canela_live.c (canelita). Sin condición: ESP-IDF resuelve dependencias antes de leer el sdkconfig.
+list(APPEND muse_priv_requires espressif__esp_websocket_client)
 
 idf_component_register(
     SRCS ${srcs}

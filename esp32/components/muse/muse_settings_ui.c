@@ -770,7 +770,7 @@ static void build_wifi_page(lv_obj_t *tile)
         snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", m[0], m[1], m[2], m[3], m[4], m[5]);
         lv_label_set_text(mac, buf);
     }
-    note(list, "Muse remembers up to 8 networks and joins the strongest one in range. Tap a saved one twice to "
+    note(list, "canelita remembers up to 8 networks and joins the strongest one in range. Tap a saved one twice to "
                "forget it.");
 }
 
@@ -836,7 +836,7 @@ static void on_hatch_host(lv_event_t *e)
     (void)e;
     char host[MUSE_HOST_MAX + 1];
     muse_settings_hatch_host(host);
-    open_text("Muse server", host, false, MUSE_HOST_MAX, "Empty for the default", on_hatch_host_done, s_hatch);
+    open_text("Canela server", host, false, MUSE_HOST_MAX, "Empty for the default", on_hatch_host_done, s_hatch);
 }
 
 static void on_hatch_vm(lv_event_t *e)
@@ -876,7 +876,7 @@ static void on_link_reset(lv_event_t *e)
 static void build_hatch_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_hatch = page(tile, "MUSE", true, &list);
+    s_hatch = page(tile, "CANELA", true, &list);
     s_link_reset_armed_us = 0;
     s_link_status = note(list, "");
     button(list, "Reset pairing", COLOR_DANGER, on_link_reset, &s_link_reset_lbl);
@@ -939,8 +939,8 @@ static void build_ble_page(lv_obj_t *tile)
     s_ble_sw = switch_row(list, "Phone setup", muse_settings_ble_on(), on_ble_sw);
     s_ble_status = note(list, "");
     button(list, "Forget paired phones", COLOR_DANGER, on_ble_forget, NULL);
-    note(list, "When on, Muse is visible to phones nearby. Open tools/ble_setup.html in Chrome, "
-               "connect, and enter the code Muse shows to pair.");
+    note(list, "When on, canelita is visible to phones nearby. Open tools/ble_setup.html in Chrome, "
+               "connect, and enter the code canelita shows to pair.");
 }
 
 static void tick_ble(void)
@@ -1079,7 +1079,7 @@ static void build_sleep_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
     s_sleep = page(tile, "AUTO-SLEEP", true, &list);
-    note(list, "Turn the screen off after Muse has been idle for:");
+    note(list, "Apagar la pantalla tras este tiempo sin uso:");
     for (int i = 0; i < SLEEP_COUNT; i++) {
         row(list, NULL, SLEEP_NAMES[i], &s_sleep_checks[i], on_sleep_choice, (void *)(intptr_t)i);
         lv_obj_set_style_text_color(s_sleep_checks[i], lv_color_hex(COLOR_ACCENT), 0);
@@ -1225,7 +1225,7 @@ static void build_power_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
     s_power = page(tile, "POWER", true, &list);
-    note(list, "Power Muse off completely?");
+    note(list, "Apagar canelita por completo?");
     button(list, LV_SYMBOL_POWER "  Power off", COLOR_DANGER, on_power_off, NULL);
     button(list, "Cancel", COLOR_TEXT, on_back, NULL);
     char text[128];
@@ -1249,7 +1249,7 @@ static void build_home(lv_obj_t *tile)
     lv_obj_t *list;
     s_home = page(tile, "SETTINGS", false, &list);
     row(list, LV_SYMBOL_WIFI, "Wi-Fi", &s_home_wifi, on_nav, (void *)&WIFI);
-    row(list, LV_SYMBOL_HOME, "Muse", &s_home_hatch, on_nav, (void *)&HATCH);
+    row(list, LV_SYMBOL_HOME, "Canela", &s_home_hatch, on_nav, (void *)&HATCH);
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
     row(list, LV_SYMBOL_EYE_CLOSE, "Sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
@@ -1289,7 +1289,7 @@ static void tick_home(void)
     }
     set_text(s_home_battery, buf);
 
-    snprintf(buf, sizeof(buf), "Muse %s  -  %s", esp_app_get_description()->version,
+    snprintf(buf, sizeof(buf), "canelita %s  -  %s", esp_app_get_description()->version,
              w.state == MUSE_WIFI_CONNECTED ? w.ip : "offline");
     set_text(s_about, buf);
 }

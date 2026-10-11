@@ -251,7 +251,7 @@ static void status_text(char *buf, size_t n)
         snprintf(batt, sizeof(batt), "%d%%%s", p.battery_pct, p.charging ? " +" : "");
     }
     const char *phone = b.state == MUSE_BLE_OFF ? "Off" : (b.state == MUSE_BLE_CONNECTED ? "Connected" : b.name);
-    snprintf(buf, n, "Wi-Fi %s\nIP    %s\nLink  %s\nMuse  %s\nPhone %s\nPower %s\nVer   %s",
+    snprintf(buf, n, "Wi-Fi  %s\nIP     %s\nLink   %s\nCanela %s\nPhone  %s\nPower  %s\nVer    %s",
              w.state == MUSE_WIFI_CONNECTED ? w.ssid : (w.state == MUSE_WIFI_OFF ? "off" : "offline"),
              w.state == MUSE_WIFI_CONNECTED ? w.ip : "-", muse_link_state_name(muse_link_state()),
              muse_hatch_state_name(h.state), phone, batt,
@@ -301,7 +301,7 @@ static void battery_text(char *buf, size_t n)
 
 static void refresh(void)
 {
-    char buf[160];
+    char buf[256];   /* canelita: «Canela» y columnas más anchas en el estado */
     if (s_view == VIEW_LIST) {
         for (int i = 0; i < ITEM_COUNT; i++) {
             value_text(i, buf, sizeof(buf));
@@ -353,7 +353,7 @@ static void show(view_t view)
         break;
     case VIEW_POWER: {
         char text[96];
-        snprintf(text, sizeof(text), "Turn Muse off?\n\nPress the %s button to turn it back on.",
+        snprintf(text, sizeof(text), "Apagar canelita?\n\nPara encenderla, presiona el boton %s.",
                  muse_board->keyboard ? "GO" : muse_board->aux_button);
         set_text(s_title, "POWER OFF");
         set_text(s_page, text);

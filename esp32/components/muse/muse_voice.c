@@ -37,6 +37,9 @@
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_wifi.h"
+#if CONFIG_CANELITA_CHAT
+#include "canela_live.h"
+#endif
 
 static const char *TAG = "muse_voice";
 
@@ -444,7 +447,7 @@ static const char *not_ready_reason(void)
     switch (st.state) {
     case MUSE_HATCH_NOT_SET: return "CONFIGURA CANELITA";
     case MUSE_HATCH_OFFLINE: return "SIN WI-FI";
-    default: return "CAN'T REACH MUSE";
+    default: return "NO LLEGO A CANELA";
     }
 }
 
@@ -786,6 +789,110 @@ static bool can_record(void)
     return true;
 }
 
+#if CONFIG_CANELITA_CHAT
+/*
+ * canelita: llamada con Canela por gpt-live-1, abierta con un toque corto y
+ * colgada con otro (canela_live.c). Cada vuelta dura un trozo de micrófono
+ * (20 ms): el micrófono sube, la voz de Canela baja y suena.
+ *
+ * Sin cancelación de eco, mientras Canela suena (y ECO_COLA_MS después) se
+ * sube silencio en lugar del micrófono: si no, gpt-live la oiría y se
+ * interrumpiría sola. Por eso no se le puede ganar la palabra hablando; con un
+ * toque se cuelga.
+ */
+#define ECO_COLA_MS 400
+/* gpt-live manda audio continuo, también silencio cuando Canela calla: sólo cuenta como «hablando» lo que
+ * suena de verdad. Si no, el micrófono quedaba tapado toda la llamada y Canela nunca oía nada. */
+#define VOZ_DBFS (-50.0f)
+/* La detección de voz de gpt-live necesita más nivel que el STT de los turnos (que normaliza): +12 dB. */
+#define LIVE_GANANCIA 4
+
+static void live_call(void)
+{
+    static int16_t mic[MUSE_AUDIO_CHUNK], out[MUSE_AUDIO_CHUNK];
+    static const int16_t silence[MUSE_AUDIO_CHUNK];
+    muse_state_set_level(0);
+    muse_state_set_mode(MUSE_MODE_THINKING);
+    muse_state_set_caption("LLAMANDO A CANELA");
+    if (!canela_live_abrir()) {
+        go_idle("CONFIGURA CANELITA");
+        return;
+    }
+    int64_t t0 = esp_timer_get_time(), ultimo_sonido = 0, abierta = 0;
+    bool hablando = false;
+    size_t sonado = 0, eco_silenciado = 0;   /* muestras: voz de Canela tocada y micrófono tapado por eco */
+    const char *motivo = "LLAMADA TERMINADA";
+    for (;;) {
+        canela_live_estado_t e = canela_live_estado();
+        int64_t ahora = esp_timer_get_time();
+        if (e == CANELA_LIVE_ERROR) { motivo = canela_live_error(); break; }
+        if (e == CANELA_LIVE_FIN) break;
+        if (e == CANELA_LIVE_CONECTANDO && ahora - t0 > 20000000) { motivo = "NO CONTESTO CANELA"; break; }
+        if (got_event(MUSE_PTT_DOWN)) break;   /* un toque cuelga */
+        if (muse_audio_read(mic, MUSE_AUDIO_CHUNK) != ESP_OK) { motivo = "FALLO EL MICROFONO"; break; }
+        if (e == CANELA_LIVE_CONECTANDO) {
+            continue;
+        }
+        if (!abierta) {
+            abierta = ahora;
+            ESP_LOGI(TAG, "llamada abierta en %.1fs", (ahora - t0) / 1e6);
+            muse_state_set_mode(MUSE_MODE_LISTENING);
+        }
+        size_t n = canela_live_read(out, MUSE_AUDIO_CHUNK);
+        if (n && n < MUSE_AUDIO_CHUNK) memset(out + n, 0, (MUSE_AUDIO_CHUNK - n) * sizeof(int16_t));
+        bool escrito = false;
+        if (n && muse_audio_dbfs(out, MUSE_AUDIO_CHUNK) < VOZ_DBFS) {
+            muse_audio_write(out, MUSE_AUDIO_CHUNK);   /* silencio de Canela: suena, pero no tapa el micrófono */
+            escrito = true;
+            n = 0;
+        } else if (n) {
+            if (!hablando) {
+                hablando = true;
+                canela_live_seguir();
+                muse_state_set_mode(MUSE_MODE_SPEAKING);
+            }
+            muse_state_set_level(muse_audio_level(out, MUSE_AUDIO_CHUNK));
+            muse_audio_write(out, MUSE_AUDIO_CHUNK);
+            ultimo_sonido = ahora;
+            sonado += n;
+        } else {
+            if (!escrito) muse_audio_write(silence, MUSE_AUDIO_CHUNK);   /* la bocina siempre alimentada */
+            if (hablando && ahora - ultimo_sonido > ECO_COLA_MS * 1000) {
+                hablando = false;
+                muse_state_set_level(0);
+                muse_state_set_mode(e == CANELA_LIVE_PENSANDO ? MUSE_MODE_THINKING : MUSE_MODE_LISTENING);
+            } else if (!hablando) {
+                muse_state_set_mode(e == CANELA_LIVE_PENSANDO ? MUSE_MODE_THINKING : MUSE_MODE_LISTENING);
+                muse_state_set_level(muse_audio_level(mic, MUSE_AUDIO_CHUNK));
+            }
+        }
+        for (size_t i = 0; i < MUSE_AUDIO_CHUNK; i++) {
+            int32_t v = (int32_t)mic[i] * LIVE_GANANCIA;
+            mic[i] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+        }
+        bool eco = ahora - ultimo_sonido < ECO_COLA_MS * 1000;
+        canela_live_send(eco ? silence : mic, MUSE_AUDIO_CHUNK);
+        eco_silenciado += eco ? MUSE_AUDIO_CHUNK : 0;
+        /* Cada segundo: el tiempo de llamada en el subtítulo, y que la pantalla no se duerma. */
+        static int64_t ultimo_seg;
+        if (ahora - ultimo_seg > 1000000) {
+            ultimo_seg = ahora;
+            muse_state_poke();
+            int s = (int)((ahora - abierta) / 1000000);
+            muse_state_set_caption(hablando ? "CANELA  %d:%02d" : e == CANELA_LIVE_PENSANDO ? "PENSANDO  %d:%02d"
+                                                                                             : "EN LLAMADA  %d:%02d",
+                                   s / 60, s % 60);
+        }
+    }
+    canela_live_stop();
+    ESP_LOGI(TAG, "llamada cerrada tras %.0fs: %s; Canela sonó %.1fs, micrófono tapado por eco %.1fs",
+             (esp_timer_get_time() - t0) / 1e6, motivo, (double)sonado / MUSE_AUDIO_RATE,
+             (double)eco_silenciado / MUSE_AUDIO_RATE);
+    muse_state_set_level(0);
+    go_idle(motivo);
+}
+#endif
+
 static void voice_task(void *arg)
 {
     bool pending_down = false;
@@ -870,7 +977,12 @@ static void voice_task(void *arg)
             muse_hatch_turn_cancel();
             drop_rec();
             pre_reset();
+#if CONFIG_CANELITA_CHAT
+            live_call();   /* canelita: un toque abre la llamada con Canela (gpt-live) */
+            pre_reset();
+#else
             go_idle("MANTEN PARA HABLAR");
+#endif
             continue;
         }
         if (!ok) {
