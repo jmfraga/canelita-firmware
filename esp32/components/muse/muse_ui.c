@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -108,6 +109,10 @@ static lv_obj_t *s_bar;     /* compact layout's stand-in for the ring */
 static lv_obj_t *s_state_lbl;
 static lv_obj_t *s_name_lbl;    /* this gadget's own name, to tell it from the next one */
 static lv_obj_t *s_power_lbl;
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206
+/* canelita en el reloj: la hora grande y la fecha bajo la cara de Canela. */
+static lv_obj_t *s_clock_lbl, *s_date_lbl;
+#endif
 static lv_obj_t *s_caption_lbl;
 static lv_obj_t *s_reply_lbl;   /* full layout: the reply's page while answering */
 static lv_obj_t *s_meter[METER_SEGS];
@@ -890,6 +895,19 @@ static void build_screen(void)
      * these rows, so there's nowhere to put this without covering the face. */
     lv_obj_set_flag(s_name_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
 
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206
+    /* Carátula: la letra pixelada de la interfaz a 3x, a juego con la cara; sin fuente nueva. */
+    s_clock_lbl = make_label(face, &lv_font_unscii_16, 0xffffff);
+    lv_obj_set_style_transform_scale(s_clock_lbl, 3 * 256, 0);
+    lv_obj_set_style_transform_pivot_x(s_clock_lbl, lv_pct(50), 0);
+    lv_obj_set_style_transform_pivot_y(s_clock_lbl, lv_pct(50), 0);
+    lv_obj_set_style_text_letter_space(s_clock_lbl, 1, 0);
+    lv_obj_align(s_clock_lbl, LV_ALIGN_BOTTOM_MID, 0, -86);
+    s_date_lbl = make_label(face, &lv_font_unscii_16, COLOR_DIM);
+    lv_obj_set_style_text_letter_space(s_date_lbl, 2, 0);
+    lv_obj_align(s_date_lbl, LV_ALIGN_BOTTOM_MID, 0, -44);
+#endif
+
     s_caption_lbl = make_label(face, font_pick(caption_font(), &lv_font_unscii_8), COLOR_CAPTION);
     if (s_small) {
         /* Two lines over the bottom of the face, on a dark band so they stay
@@ -1316,6 +1334,29 @@ static void update_power(float now)
     if (strcmp(buf, lv_label_get_text(s_power_lbl)) != 0) {
         lv_label_set_text(s_power_lbl, buf);
     }
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206
+    /* La hora, una vez por segundo. Antes de la primera sincronía (año < 2025) no se inventa: se dejan rayas. */
+    static const char *const DIAS[] = { "DOM", "LUN", "MAR", "MIE", "JUE", "VIE", "SAB" };
+    static const char *const MESES[] = { "ENE", "FEB", "MAR", "ABR", "MAY", "JUN",
+                                          "JUL", "AGO", "SEP", "OCT", "NOV", "DIC" };
+    time_t t = time(NULL);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    char hora[8], fecha[20];
+    if (tm.tm_year + 1900 >= 2025) {
+        snprintf(hora, sizeof(hora), "%02d:%02d", tm.tm_hour, tm.tm_min);
+        snprintf(fecha, sizeof(fecha), "%s %d %s", DIAS[tm.tm_wday], tm.tm_mday, MESES[tm.tm_mon]);
+    } else {
+        strlcpy(hora, "--:--", sizeof(hora));
+        strlcpy(fecha, "", sizeof(fecha));
+    }
+    if (strcmp(hora, lv_label_get_text(s_clock_lbl)) != 0) {
+        lv_label_set_text(s_clock_lbl, hora);
+    }
+    if (strcmp(fecha, lv_label_get_text(s_date_lbl)) != 0) {
+        lv_label_set_text(s_date_lbl, fecha);
+    }
+#endif
 }
 
 static void update_status(muse_mode_t mode, float now)

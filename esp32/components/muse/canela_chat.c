@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include "esp_crt_bundle.h"
+#include "esp_sntp.h"
 #include "esp_debug_helpers.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
@@ -508,6 +509,16 @@ void muse_hatch_start(void)
         ESP_LOGE(TAG, "no pude crear la tarea de canelita");
     }
     load_config();
+    /* La hora (carátula del reloj, y para lo que la necesite): por internet, con la zona de Querétaro, que ya
+     * no cambia de horario (UTC-6 todo el año). SNTP reintenta solo hasta que haya Wi-Fi. */
+    setenv("TZ", "CST6", 1);
+    tzset();
+    if (!esp_sntp_enabled()) {
+        esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+        esp_sntp_setservername(0, "pool.ntp.org");
+        esp_sntp_setservername(1, "time.google.com");
+        esp_sntp_init();
+    }
     ESP_LOGI(TAG, "canelita lista: %s", configured() ? "configurada" : "falta configurar por USB");
 }
 
