@@ -112,6 +112,7 @@ static lv_obj_t *s_power_lbl;
 #if CONFIG_MUSE_BOARD_WAVESHARE_S3_206
 /* canelita en el reloj: la hora grande y la fecha bajo la cara de Canela. */
 static lv_obj_t *s_clock_lbl, *s_date_lbl;
+#define LETRERO_S 8.0f   /* en reposo, un letrero («LLAMADA TERMINADA»…) tapa la hora: se va a los 8 s */
 #endif
 static lv_obj_t *s_caption_lbl;
 static lv_obj_t *s_reply_lbl;   /* full layout: the reply's page while answering */
@@ -1313,6 +1314,20 @@ static void set_meter_visible(bool visible)
     s_shown_lit = -1;
 }
 
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206
+/* El letrero bajo la cara ocupa el lugar de la hora en el reloj. */
+static bool hay_letrero(void)
+{
+    return s_caption_lbl && !lv_obj_has_flag(s_caption_lbl, LV_OBJ_FLAG_HIDDEN) && lv_label_get_text(s_caption_lbl)[0];
+}
+
+static void reloj_visible(bool si)
+{
+    lv_obj_set_flag(s_clock_lbl, LV_OBJ_FLAG_HIDDEN, !si);
+    lv_obj_set_flag(s_date_lbl, LV_OBJ_FLAG_HIDDEN, !si);
+}
+#endif
+
 static void update_power(float now)
 {
     if (now < s_next_power_update) {
@@ -1356,6 +1371,23 @@ static void update_power(float now)
     if (strcmp(fecha, lv_label_get_text(s_date_lbl)) != 0) {
         lv_label_set_text(s_date_lbl, fecha);
     }
+    /* En reposo: con letrero, la hora se esconde; a los LETRERO_S el letrero se va y vuelve la hora. */
+    static float letrero_desde;
+    bool reposo = muse_state_mode(NULL) == MUSE_MODE_IDLE;
+    bool letrero = hay_letrero();
+    if (reposo && letrero) {
+        if (!letrero_desde) {
+            letrero_desde = now;
+        } else if (now - letrero_desde > LETRERO_S) {
+            lv_obj_add_flag(s_caption_lbl, LV_OBJ_FLAG_HIDDEN);
+            letrero = false;
+        }
+    } else {
+        letrero_desde = 0;
+    }
+    if (reposo) {
+        reloj_visible(!letrero);
+    }
 #endif
 }
 
@@ -1374,8 +1406,7 @@ static void update_status(muse_mode_t mode, float now)
          * escuchar, pensar o hablar vuelve el anillo y se esconde la hora. */
         bool reposo = mode == MUSE_MODE_IDLE;
         if (s_ring) lv_obj_set_flag(s_ring, LV_OBJ_FLAG_HIDDEN, reposo);
-        lv_obj_set_flag(s_clock_lbl, LV_OBJ_FLAG_HIDDEN, !reposo);
-        lv_obj_set_flag(s_date_lbl, LV_OBJ_FLAG_HIDDEN, !reposo);
+        reloj_visible(reposo && !hay_letrero());
 #endif
         lv_obj_set_style_text_color(s_state_lbl, lv_color_hex(accent), 0);
         if (s_ring) {
