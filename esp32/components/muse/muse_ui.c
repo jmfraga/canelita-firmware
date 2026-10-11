@@ -1369,6 +1369,14 @@ static void update_status(muse_mode_t mode, float now)
         s_shown_name = name;
     }
     if ((int)mode != s_shown_state) {
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206
+        /* Reloj: en reposo la carátula (hora y fecha) sin el anillo, que pasaría por detrás de la hora; al
+         * escuchar, pensar o hablar vuelve el anillo y se esconde la hora. */
+        bool reposo = mode == MUSE_MODE_IDLE;
+        if (s_ring) lv_obj_set_flag(s_ring, LV_OBJ_FLAG_HIDDEN, reposo);
+        lv_obj_set_flag(s_clock_lbl, LV_OBJ_FLAG_HIDDEN, !reposo);
+        lv_obj_set_flag(s_date_lbl, LV_OBJ_FLAG_HIDDEN, !reposo);
+#endif
         lv_obj_set_style_text_color(s_state_lbl, lv_color_hex(accent), 0);
         if (s_ring) {
             lv_obj_set_style_arc_color(s_ring, lv_color_hex(accent), LV_PART_INDICATOR);
