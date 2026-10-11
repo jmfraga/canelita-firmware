@@ -1309,7 +1309,7 @@ static void update_power(float now)
     } else if (s_small) {
         snprintf(buf, sizeof(buf), "%s%d%%", p.charging ? "+" : "", p.battery_pct);
     } else if (p.charging) {
-        snprintf(buf, sizeof(buf), "CHARGING %d%%", p.battery_pct);
+        snprintf(buf, sizeof(buf), "CARGANDO %d%%", p.battery_pct);
     } else {
         snprintf(buf, sizeof(buf), "BATERIA %d%%", p.battery_pct);
     }

@@ -281,9 +281,9 @@ static const muse_board_t s_board = {
     .diagonal_in = 2.06f,
     .talk_button = "boot",
     .aux_button = "pwr",
-    /* Side buttons on the right: PWR above, BOOT (talk) below. */
-    .talk_hint = { LV_ALIGN_RIGHT_MID, -8, 120 },
-    .aux_hint = { LV_ALIGN_RIGHT_MID, -8, -120 },
+    /* Side buttons on the right: BOOT (talk) above, PWR below (checked on the watch). */
+    .talk_hint = { LV_ALIGN_RIGHT_MID, -8, -120 },
+    .aux_hint = { LV_ALIGN_RIGHT_MID, -8, 120 },
 #else
     .round = true,
     .touch = true,
