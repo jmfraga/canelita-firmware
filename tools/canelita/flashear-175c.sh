@@ -1,4 +1,11 @@
 #!/bin/bash
+# Guarda: este script es de la 1.75C (canelita de cuello). Con el reloj 2.06 conectado no se flashea.
+_P=$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)
+_ID=$(export PATH="$HOME/.canelita-tools/py312bin:$PATH"; . ~/esp/esp-idf-v6/export.sh >/dev/null 2>&1; [ -n "$_P" ] && python -m esptool --port "$_P" chip-id 2>&1)
+if [ -n "$_P" ] && ! echo "$_ID" | grep -qi "MAC:"; then echo "NO PUDE LEER LA PLACA: no flasheo."; exit 1; fi
+if echo "$_ID" | grep -qi "28:84:85:90:f3:7c"; then
+  echo "ES EL RELOJ 2.06: usa flashear-206.sh. No flasheo."; exit 1
+fi
 set -e
 T=~/.canelita-tools; export PATH="$T/py312bin:$T/buildbin:$PATH"
 . ~/esp/esp-idf-v6/export.sh >/dev/null
