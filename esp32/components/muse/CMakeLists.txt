@@ -64,8 +64,9 @@ if(CONFIG_MUSE_ENABLED)
     else()
         list(APPEND srcs "../../avatar/muse_pixel.c")
     endif()
-    if(CONFIG_MUSE_BOARD_WAVESHARE_S3_175C OR CONFIG_MUSE_BOARD_WAVESHARE_S3_175)
-        # One driver: the 1.75 differs only in pins (its BSP's) and its PWR key.
+    if(CONFIG_MUSE_BOARD_WAVESHARE_S3_175C OR CONFIG_MUSE_BOARD_WAVESHARE_S3_175 OR CONFIG_MUSE_BOARD_WAVESHARE_S3_206)
+        # One driver: the 1.75 differs only in pins (its BSP's) and its PWR key; the 2.06 (watch) in its
+        # rectangular SH8601 panel and FT3168 touch, behind the same BSP API.
         list(APPEND srcs "boards/board_waveshare_s3_175c.c" "boards/muse_lcd_bands.c")
     elseif(CONFIG_MUSE_BOARD_AIPI)
         list(APPEND srcs "boards/board_aipi.c")

@@ -213,3 +213,19 @@ despiertan. Mandar un secreto sin `>` lo convierte en pulsaciones sueltas.
 - Fuente con acentos para los subtítulos.
 - Latencia: ~11 s en respuestas cortas, más en las largas (la voz se genera
   completa antes de reproducirse).
+
+## ⌚ La segunda placa: el reloj (Waveshare ESP32-S3-Touch-AMOLED-2.06)
+
+Llegó el 10 de octubre de 2026. Mismo chip y memoria que la 1.75C (ESP32-S3 rev 0.2, PSRAM 8 MB, flash 32 MB),
+pantalla rectangular 410×502 (SH8601), táctil FT3168, el mismo audio (ES8311 + ES7210), AXP2101 y lector microSD.
+
+- **Respaldo de fábrica:** `respaldar-206.sh` (carpeta propia `~/canelita-respaldos/reloj-206/`; verifica la MAC
+  antes de cada trozo). 32 MB en ~4 min, SHA-256 `e8634412…9746ebf`. Igual que el de la 1.75C, no se sube aquí.
+- **Port:** el SDK no la traía. Se agregó `CONFIG_MUSE_BOARD_WAVESHARE_S3_206` y corre con el mismo
+  `boards/board_waveshare_s3_175c.c`: el BSP de Waveshare para la 2.06 expone la misma API. Diferencias: pantalla
+  no redonda, táctil que se duerme con el registro `0xA5`, PWR leído del PMU (como en la 1.75) y BOOT habla. Los
+  rieles del PMU se dejan como vienen (no se verificó qué alimenta cada uno).
+- El encabezado `bsp/display.h` del BSP 2.06 usa `esp_err_t` sin incluirlo: se incluye `esp_err.h` antes.
+- **Compilar y flashear:** `compilar-206.sh` (carpeta `build-206`) y `flashear-206.sh` (verifica la MAC del reloj
+  antes de borrar nada). Se configura igual que la 1.75C con `configurar.py`.
+- Primera prueba: 5 de 5 turnos por voz; la primera frase suena 5.7-9 s después de soltar (Wi-Fi de casa).
