@@ -113,6 +113,11 @@ static lv_obj_t *s_power_lbl;
 /* canelita en el reloj: la hora grande y la fecha bajo la cara de Canela. */
 static lv_obj_t *s_clock_lbl, *s_date_lbl;
 #define LETRERO_S 8.0f   /* en reposo, un letrero («LLAMADA TERMINADA»…) tapa la hora: se va a los 8 s */
+#if CONFIG_CANELITA_CHAT
+#include "canela_chat.h"
+/* Agenda: deslizando hacia arriba desde la carátula. */
+static lv_obj_t *s_agenda_tile, *s_agenda_lbl, *s_agenda_pie;
+#endif
 #endif
 static lv_obj_t *s_caption_lbl;
 static lv_obj_t *s_reply_lbl;   /* full layout: the reply's page while answering */
@@ -809,11 +814,32 @@ static void build_screen(void)
         lv_obj_set_style_bg_color(s_tv, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_tv, LV_OPA_COVER, 0);
         lv_obj_set_scrollbar_mode(s_tv, LV_SCROLLBAR_MODE_OFF);
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206 && CONFIG_CANELITA_CHAT
+        s_face = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT | LV_DIR_BOTTOM);   /* abajo: la agenda */
+#else
         s_face = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT);
+#endif
         /* It never scrolls, but LVGL would size its scrollbars from all its
          * children every time it draws any part of it. */
         lv_obj_set_scrollbar_mode(s_face, LV_SCROLLBAR_MODE_OFF);
         s_settings = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT);
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206 && CONFIG_CANELITA_CHAT
+        s_agenda_tile = lv_tileview_add_tile(s_tv, 0, 1, LV_DIR_TOP);
+        lv_obj_set_scrollbar_mode(s_agenda_tile, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_t *titulo = make_label(s_agenda_tile, &lv_font_unscii_16, COLOR_ACCENT);
+        lv_obj_set_style_text_letter_space(titulo, 2, 0);
+        lv_label_set_text(titulo, "HOY");
+        lv_obj_align(titulo, LV_ALIGN_TOP_MID, 0, 28);
+        s_agenda_lbl = make_label(s_agenda_tile, &lv_font_unscii_16, 0xffffff);
+        lv_obj_set_width(s_agenda_lbl, s_w - 40);
+        lv_obj_set_style_text_align(s_agenda_lbl, LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_set_style_text_line_space(s_agenda_lbl, 6, 0);
+        lv_label_set_long_mode(s_agenda_lbl, LV_LABEL_LONG_MODE_WRAP);
+        lv_obj_align(s_agenda_lbl, LV_ALIGN_TOP_LEFT, 20, 64);
+        lv_label_set_text(s_agenda_lbl, "CARGANDO...");
+        s_agenda_pie = make_label(s_agenda_tile, &lv_font_unscii_8, COLOR_DIM);
+        lv_obj_align(s_agenda_pie, LV_ALIGN_BOTTOM_MID, 0, -16);
+#endif
         face = s_face;
     }
 
@@ -1371,6 +1397,37 @@ static void update_power(float now)
     if (strcmp(fecha, lv_label_get_text(s_date_lbl)) != 0) {
         lv_label_set_text(s_date_lbl, fecha);
     }
+#if CONFIG_CANELITA_CHAT
+    /* Agenda: sólo mientras se ve su página (cuida la batería); se renueva a lo más cada minuto. */
+    if (s_agenda_tile && lv_tileview_get_tile_active(s_tv) == s_agenda_tile) {
+        canela_agenda_pedir(60);
+        static char crudo[2048], vista[2400];
+        int edad = 0;
+        bool fallo = false;
+        if (canela_agenda_leer(crudo, sizeof(crudo), &edad, &fallo)) {
+            size_t o = 0;
+            for (char *l = crudo, *sig; l && *l && o < sizeof(vista) - 64; l = sig) {
+                sig = strchr(l, '\n');
+                if (sig) *sig++ = 0;
+                char *tab = strchr(l, '\t');
+                if (!strcmp(l, "MANANA")) {
+                    o += snprintf(vista + o, sizeof(vista) - o, "%s- MANANA -\n", o ? "\n" : "");
+                } else if (tab) {
+                    *tab = 0;
+                    o += snprintf(vista + o, sizeof(vista) - o, "%-5.11s %s\n", l, tab + 1);
+                }
+            }
+            if (!o) strlcpy(vista, "NADA EN LAS PROXIMAS 24 H", sizeof(vista));
+            if (strcmp(vista, lv_label_get_text(s_agenda_lbl)) != 0) lv_label_set_text(s_agenda_lbl, vista);
+            char pie[48];
+            snprintf(pie, sizeof(pie), fallo ? "SIN CONEXION - HACE %d MIN" : "HACE %d MIN", edad / 60);
+            if (edad < 60 && !fallo) strlcpy(pie, "AL DIA", sizeof(pie));
+            if (strcmp(pie, lv_label_get_text(s_agenda_pie)) != 0) lv_label_set_text(s_agenda_pie, pie);
+        } else if (fallo && strcmp(lv_label_get_text(s_agenda_lbl), "SIN CONEXION") != 0) {
+            lv_label_set_text(s_agenda_lbl, "SIN CONEXION");
+        }
+    }
+#endif
     /* En reposo: con letrero, la hora se esconde; a los LETRERO_S el letrero se va y vuelve la hora. */
     static float letrero_desde;
     bool reposo = muse_state_mode(NULL) == MUSE_MODE_IDLE;

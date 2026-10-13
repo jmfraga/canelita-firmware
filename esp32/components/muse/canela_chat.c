@@ -220,7 +220,13 @@ static int16_t *mp3_to_pcm(const uint8_t *mp3, size_t len, size_t *out_frames)
 
 /* Un turno para la tarea de red: de voz (texto NULL; el audio lo va dejando
  * muse_hatch_turn_audio en s_turn) o escrito por la consola. */
-typedef struct { char *texto; uint32_t gen; } job_t;
+typedef struct { char *texto; uint32_t gen; bool agenda; } job_t;
+
+/* ---- Agenda (pantalla del reloj) ---- */
+#define AGENDA_MAX 2048
+static char s_agenda[AGENDA_MAX];
+static int64_t s_agenda_us;            /* cuándo llegó la última (0: nunca) */
+static volatile bool s_agenda_pend, s_agenda_fallo;
 
 static const char *http_error(int status)
 {
@@ -477,12 +483,60 @@ done:
  * PSRAM. No se borra a sí misma: una tarea con pila en PSRAM no puede liberarse sola. */
 static QueueHandle_t s_jobs;
 
+/* GET de la agenda: texto plano corto. Se translitera a ASCII para las fuentes de la pantalla. */
+static void procesar_agenda(void)
+{
+    char url[200];
+    snprintf(url, sizeof(url), "%s/v1/agentes/" AGENTE "/agenda", s_url);
+    esp_http_client_config_t cfg = {
+        .url = url, .method = HTTP_METHOD_GET, .timeout_ms = 20000,
+        .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 2048, .buffer_size_tx = 1024,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    char auth[120];
+    snprintf(auth, sizeof(auth), "Bearer %s", s_token);
+    esp_http_client_set_header(c, "CF-Access-Client-Id", s_cf_id);
+    esp_http_client_set_header(c, "CF-Access-Client-Secret", s_cf_secret);
+    esp_http_client_set_header(c, "Authorization", auth);
+    static char buf[AGENDA_MAX];
+    int len = -1;
+    if (esp_http_client_open(c, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(c);
+        if (esp_http_client_get_status_code(c) == 200) {
+            len = 0;
+            int r;
+            while (len < AGENDA_MAX - 1 && (r = esp_http_client_read(c, buf + len, AGENDA_MAX - 1 - len)) > 0) len += r;
+        }
+    }
+    esp_http_client_cleanup(c);
+    if (len >= 0) {
+        buf[len] = 0;
+        ascii_es(buf);
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        strlcpy(s_agenda, buf, sizeof(s_agenda));
+        s_agenda_us = esp_timer_get_time();
+        xSemaphoreGive(s_lock);
+        s_agenda_fallo = false;
+        ESP_LOGI(TAG, "agenda: %d bytes", len);
+    } else {
+        s_agenda_fallo = true;
+        ESP_LOGW(TAG, "agenda: no llegó");
+    }
+    s_agenda_pend = false;
+}
+
 static void worker_loop(void *arg)
 {
     (void)arg;
     for (;;) {
         job_t *job;
-        if (xQueueReceive(s_jobs, &job, portMAX_DELAY) == pdTRUE) procesar(job);
+        if (xQueueReceive(s_jobs, &job, portMAX_DELAY) != pdTRUE) continue;
+        if (job->agenda) {
+            procesar_agenda();
+            free(job);
+        } else {
+            procesar(job);
+        }
     }
 }
 
@@ -551,6 +605,31 @@ const char *muse_hatch_state_name(muse_hatch_state_t state)
     case MUSE_HATCH_UNREACHABLE: return "No conecta";
     }
     return "";
+}
+
+void canela_agenda_pedir(int edad_max_s)
+{
+    if (s_agenda_pend || !s_jobs || !configured() || !muse_wifi_connected()) return;
+    if (s_agenda_us && esp_timer_get_time() - s_agenda_us < (int64_t)edad_max_s * 1000000) return;
+    job_t *job = calloc(1, sizeof(*job));
+    if (!job) return;
+    job->agenda = true;
+    s_agenda_pend = true;
+    if (xQueueSend(s_jobs, &job, 0) != pdTRUE) {   /* ocupada con un turno: se intenta en la siguiente vuelta */
+        free(job);
+        s_agenda_pend = false;
+    }
+}
+
+bool canela_agenda_leer(char *out, size_t cap, int *edad_s, bool *fallo)
+{
+    if (fallo) *fallo = s_agenda_fallo;
+    if (!s_lock || !s_agenda_us) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    strlcpy(out, s_agenda, cap);
+    if (edad_s) *edad_s = (int)((esp_timer_get_time() - s_agenda_us) / 1000000);
+    xSemaphoreGive(s_lock);
+    return true;
 }
 
 /* Llamada gpt-live-1 (canela_live.c) con la misma configuración que los turnos. */

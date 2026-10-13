@@ -8,3 +8,11 @@
 /* Comandos de consola canelita.* (configuración por USB). true si la línea era
  * de canelita y ya se atendió. Ver canela_chat.c. */
 bool canela_console(char *line);
+
+#include <stddef.h>
+
+/* Agenda de las próximas 24 h para la pantalla del reloj (GET /v1/agentes/canela/agenda), ya en ASCII.
+ * pedir() la encarga a la tarea de red si la última tiene más de `edad_max_s`; leer() copia la última que llegó
+ * (renglones `HH:MM<TAB>título`, `MANANA` separa) y dice hace cuántos segundos y si el último intento falló. */
+void canela_agenda_pedir(int edad_max_s);
+bool canela_agenda_leer(char *out, size_t cap, int *edad_s, bool *fallo);
