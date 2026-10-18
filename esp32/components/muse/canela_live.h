@@ -20,7 +20,8 @@ typedef enum {
 } canela_live_estado_t;
 
 /* Abre la llamada (no bloquea); el estado pasa a LISTA cuando el brain la acepta. */
-bool canela_live_start(const char *url_base, const char *cf_id, const char *cf_secret, const char *token);
+bool canela_live_start(const char *url_base, const char *cf_id, const char *cf_secret, const char *token,
+                       const char *agente);
 canela_live_estado_t canela_live_estado(void);
 const char *canela_live_error(void);
 int canela_live_max_s(void);

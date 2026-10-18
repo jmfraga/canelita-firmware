@@ -23,3 +23,9 @@ bool canela_agenda_leer(char *out, size_t cap, int *edad_s, bool *fallo);
 void canela_mascota_pedir(int edad_max_s);
 bool canela_mascota_accion(const char *accion, int minutos);
 bool canela_mascota_leer(char *out, size_t cap, int *edad_s, bool *fallo, bool *pendiente);
+
+/* Con quién habla el botón: «canela» o «vera» (Vera 2, página del colgante). Lo fija la página activa al
+ * apretar; los turnos y la llamada van a /v1/agentes/<agente>/. Las notas guardadas sin red son solo de Canela. */
+void canela_agente_usar(const char *agente);
+const char *canela_agente(void);
+const char *canela_agente_nombre(void);   /* para la pantalla: «CANELA» o «VERA 2» */

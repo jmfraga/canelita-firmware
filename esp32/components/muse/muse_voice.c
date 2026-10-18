@@ -39,6 +39,7 @@
 #include "muse_state.h"
 #include "muse_wifi.h"
 #if CONFIG_CANELITA_CHAT
+#include "canela_chat.h"
 #include "canela_live.h"
 #endif
 
@@ -653,6 +654,9 @@ static bool send_held(bool quiet)
         muse_state_set_mode(MUSE_MODE_THINKING);
         muse_state_set_caption("ENVIANDO NOTA GUARDADA");
     }
+#if CONFIG_CANELITA_CHAT
+    canela_agente_usar("canela");   /* las notas guardadas son solo de Canela (ver can_record) */
+#endif
     muse_hatch_turn_begin();
     size_t sent = 0;
     feed_t fed = feed_rest(h->pcm, h->frames, &sent, true);
@@ -772,6 +776,13 @@ static bool can_record(void)
         muse_wifi_apply();   /* retry now, not after the backoff */
     }
     bool ready = muse_hatch_ready();
+#if CONFIG_CANELITA_CHAT
+    if (!ready && !strcmp(canela_agente(), "vera")) {
+        /* Sin red no se guarda una nota para Vera 2: al mandarla después podría oírla otra identidad. */
+        go_idle("VERA NECESITA RED");
+        return false;
+    }
+#endif
 #if HOLD_NOTES
     muse_hatch_status_t st;
     muse_hatch_status(&st);
@@ -822,7 +833,7 @@ static void live_call(void)
     static const int16_t silence[MUSE_AUDIO_CHUNK];
     muse_state_set_level(0);
     muse_state_set_mode(MUSE_MODE_THINKING);
-    muse_state_set_caption("LLAMANDO A CANELA");
+    muse_state_set_caption("LLAMANDO A %s", canela_agente_nombre());
     if (!canela_live_abrir()) {
         go_idle("CONFIGURA CANELITA");
         return;
@@ -836,7 +847,7 @@ static void live_call(void)
         int64_t ahora = esp_timer_get_time();
         if (e == CANELA_LIVE_ERROR) { motivo = canela_live_error(); break; }
         if (e == CANELA_LIVE_FIN) break;
-        if (e == CANELA_LIVE_CONECTANDO && ahora - t0 > 20000000) { motivo = "NO CONTESTO CANELA"; break; }
+        if (e == CANELA_LIVE_CONECTANDO && ahora - t0 > 20000000) { motivo = "NO CONTESTO"; break; }
         /* Un toque cuelga; el primer 0.8 s no cuenta (rebote o el soltar del toque que la abrió). */
         if (got_event(MUSE_PTT_DOWN) && ahora - t0 > 800000) break;
         if (muse_audio_read(mic, MUSE_AUDIO_CHUNK) != ESP_OK) { motivo = "FALLO EL MICROFONO"; break; }
@@ -889,9 +900,12 @@ static void live_call(void)
             ultimo_seg = ahora;
             muse_state_poke();
             int s = (int)((ahora - abierta) / 1000000);
-            muse_state_set_caption(hablando ? "CANELA  %d:%02d" : e == CANELA_LIVE_PENSANDO ? "PENSANDO  %d:%02d"
-                                                                                             : "EN LLAMADA  %d:%02d",
-                                   s / 60, s % 60);
+            if (hablando) {
+                muse_state_set_caption("%s  %d:%02d", canela_agente_nombre(), s / 60, s % 60);
+            } else {
+                muse_state_set_caption(e == CANELA_LIVE_PENSANDO ? "PENSANDO  %d:%02d" : "EN LLAMADA  %d:%02d",
+                                       s / 60, s % 60);
+            }
         }
     }
     canela_live_stop();
@@ -975,12 +989,8 @@ static void voice_task(void *arg)
             continue;   /* a tap: it only woke Muse */
         }
 #if CONFIG_CANELITA_CARRUSEL
-        if (muse_ui_en_vera()) {
-            /* Vera 2 todavía no tiene cuerpo aquí: el botón no abre a Canela en su lugar. */
-            muse_ui_vera_aviso();
-            pending_down = false;
-            continue;
-        }
+        /* El botón habla con quien está en pantalla: en la página de Vera 2, con ella (nunca Canela en su lugar). */
+        canela_agente_usar(muse_ui_en_vera() ? "vera" : "canela");
 #endif
         muse_wifi_power(MUSE_WIFI_FULL);
         if (!can_record()) {

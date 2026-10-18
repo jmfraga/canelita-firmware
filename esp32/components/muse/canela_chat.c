@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_crt_bundle.h"
 #include "esp_sntp.h"
 #include "esp_debug_helpers.h"
@@ -220,17 +221,20 @@ static int16_t *mp3_to_pcm(const uint8_t *mp3, size_t len, size_t *out_frames)
 
 /* Un turno para la tarea de red: de voz (texto NULL; el audio lo va dejando
  * muse_hatch_turn_audio en s_turn) o escrito por la consola. */
-typedef struct { char *texto; uint32_t gen; bool agenda; bool mascota; char accion[12]; int minutos; } job_t;
+typedef struct { char *texto; uint32_t gen; bool agenda; bool mascota; char accion[12]; int minutos; char agente[8]; } job_t;
+
+/* Con quién se habla: la página activa lo elige al apretar (canela o vera). Mascota y agenda son de Canela. */
+static char s_agente[8] = "canela";
 
 /* ---- Agenda (pantalla del reloj) ---- */
 #define AGENDA_MAX 2048
-static char s_agenda[AGENDA_MAX];
+EXT_RAM_BSS_ATTR static char s_agenda[AGENDA_MAX];   /* PSRAM: la RAM interna es para TLS */
 static int64_t s_agenda_us;            /* cuándo llegó la última (0: nunca) */
 static volatile bool s_agenda_pend, s_agenda_fallo;
 
 /* ---- Mascota de bolsillo (página del colgante) ---- */
 #define MASCOTA_MAX 1024
-static char s_mascota[MASCOTA_MAX];
+EXT_RAM_BSS_ATTR static char s_mascota[MASCOTA_MAX];
 static int64_t s_mascota_us;
 static volatile bool s_mascota_pend, s_mascota_fallo;
 
@@ -241,7 +245,7 @@ static const char *http_error(int status)
     case 403: return "AGENTE NO PERMITIDO";
     case 413: return "MENSAJE DEMASIADO LARGO";
     case 429: return "ESPERA UN MINUTO";
-    case 502: return "CANELA NO RESPONDE";
+    case 502: return "NO RESPONDE";
     default:  return "ERROR DE LA PUERTA";
     }
 }
@@ -345,7 +349,7 @@ static void procesar(job_t *job)
     const char *fail = NULL;
     static char fail_buf[EV_TEXT];       /* un error que manda el servidor (cuadro E) */
     char url[200];
-    snprintf(url, sizeof(url), "%s/v1/agentes/" AGENTE "/voz", s_url);
+    snprintf(url, sizeof(url), "%s/v1/agentes/%s/voz", s_url, job->agente[0] ? job->agente : AGENTE);
 
     /* Cuerpo multipart, chunked (no se sabe el largo hasta soltar): "stream"=1
      * (respuesta por frases) y "pcm" (la voz cruda) o "texto". */
@@ -529,7 +533,7 @@ static int http_texto(const char *ruta, const char *json, char *buf, int cap)
 /* GET de la agenda: texto plano corto. */
 static void procesar_agenda(void)
 {
-    static char buf[AGENDA_MAX];
+    EXT_RAM_BSS_ATTR static char buf[AGENDA_MAX];
     int len = http_texto("agenda", NULL, buf, sizeof(buf));
     if (len >= 0) {
         xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -548,7 +552,7 @@ static void procesar_agenda(void)
 /* Estado de la mascota, o un cuidado (comer, jugar, ejercicio) que devuelve el estado nuevo. */
 static void procesar_mascota(const job_t *job)
 {
-    static char buf[MASCOTA_MAX];
+    EXT_RAM_BSS_ATTR static char buf[MASCOTA_MAX];
     char json[64];
     if (job->accion[0]) {
         snprintf(json, sizeof(json), "{\"accion\":\"%s\",\"minutos\":%d}", job->accion, job->minutos);
@@ -591,6 +595,7 @@ static void launch(char *texto)
     job_t *job = calloc(1, sizeof(*job));
     if (!job) { free(texto); emit(MUSE_HATCH_EV_ERROR, "SIN MEMORIA"); return; }
     job->texto = texto; job->gen = s_gen;
+    strlcpy(job->agente, s_agente, sizeof(job->agente));
     if (!s_jobs || xQueueSend(s_jobs, &job, 0) != pdTRUE) {
         free(texto); free(job);
         emit(MUSE_HATCH_EV_ERROR, "OCUPADA, INTENTA DE NUEVO");
@@ -722,7 +727,7 @@ bool canela_mascota_leer(char *out, size_t cap, int *edad_s, bool *fallo, bool *
 bool canela_live_abrir(void)
 {
     if (!configured()) return false;
-    return canela_live_start(s_url, s_cf_id, s_cf_secret, s_token);
+    return canela_live_start(s_url, s_cf_id, s_cf_secret, s_token, s_agente);
 }
 
 bool muse_hatch_ready(void)
@@ -944,4 +949,19 @@ bool canela_console(char *line)
     }
     printf("@canelita.error comando desconocido\n");
     return true;
+}
+
+void canela_agente_usar(const char *agente)
+{
+    strlcpy(s_agente, agente && !strcmp(agente, "vera") ? "vera" : "canela", sizeof(s_agente));
+}
+
+const char *canela_agente(void)
+{
+    return s_agente;
+}
+
+const char *canela_agente_nombre(void)
+{
+    return strcmp(s_agente, "vera") ? "CANELA" : "VERA 2";
 }

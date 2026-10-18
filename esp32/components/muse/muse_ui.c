@@ -22,6 +22,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -133,9 +134,9 @@ static lv_obj_t *s_agenda_tile, *s_agenda_lbl, *s_agenda_pie;
 static lv_obj_t *s_reloj_tile, *s_mascota_tile, *s_vera_tile;
 static lv_obj_t *s_clock_lbl, *s_date_lbl, *s_reloj_bat;
 static lv_obj_t *s_agenda_tile, *s_agenda_lbl, *s_agenda_pie;
-static lv_obj_t *s_vera_estado;
-static float s_ultimo_toque, s_vera_aviso_hasta;
-static volatile bool s_en_vera, s_vera_aviso;
+static lv_obj_t *s_vera_estado, *s_vera_letrero;
+static float s_ultimo_toque;
+static volatile bool s_en_vera;
 static char s_ir_a[12];   /* pedido de la consola, lo atiende paginas_tick */
 #define VOLVER_AL_RELOJ_S 30.0f   /* sin tocar y sin conversación, cualquier página vuelve al reloj */
 #endif
@@ -881,14 +882,14 @@ static void build_paginas(void)
     lv_label_set_text(vera, "VERA 2");
     lv_obj_align(vera, LV_ALIGN_CENTER, 0, -40);
     s_vera_estado = make_label(s_vera_tile, &lv_font_unscii_16, COLOR_DIM);
-    lv_label_set_text(s_vera_estado, "NO DISPONIBLE");
+    lv_label_set_text(s_vera_estado, "TOCA O MANTEN");
     lv_obj_align(s_vera_estado, LV_ALIGN_CENTER, 0, 30);
-    lv_obj_t *nota = make_label(s_vera_tile, &lv_font_unscii_8, COLOR_DIM);
-    lv_obj_set_width(nota, s_w - 140);
-    lv_obj_set_style_text_align(nota, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(nota, LV_LABEL_LONG_MODE_WRAP);
-    lv_label_set_text(nota, "AUN NO ESTA CONECTADA A ESTE CUERPO.\nCANELA NO CONTESTA POR ELLA.");
-    lv_obj_align(nota, LV_ALIGN_CENTER, 0, 74);
+    /* Lo que diga la conversación (o «VERA NO RESPONDE»): aquí, nunca en la cara de Canela. */
+    s_vera_letrero = make_label(s_vera_tile, &lv_font_unscii_16, 0xffffff);
+    lv_obj_set_width(s_vera_letrero, s_w - 120);
+    lv_obj_set_style_text_align(s_vera_letrero, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(s_vera_letrero, LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_align(s_vera_letrero, LV_ALIGN_TOP_MID, 0, 290);
 
     /* La identidad activa, siempre a la vista (mesa IAL Core): en la cara de Canela, su nombre. */
     lv_obj_t *quien = make_label(s_face, &lv_font_unscii_8, COLOR_ACCENT);
@@ -907,7 +908,7 @@ static void build_paginas(void)
 static void agenda_pintar(void)
 {
     canela_agenda_pedir(60);
-    static char crudo[2048], vista[2400];
+    EXT_RAM_BSS_ATTR static char crudo[2048], vista[2400];   /* PSRAM: la RAM interna es para TLS */
     int edad = 0;
     bool fallo = false;
     if (canela_agenda_leer(crudo, sizeof(crudo), &edad, &fallo)) {
@@ -1751,15 +1752,16 @@ static void paginas_tick(muse_mode_t mode, float now)
     }
     lv_obj_t *activa = lv_tileview_get_tile_active(s_tv);
     s_en_vera = activa == s_vera_tile;
-    if (s_vera_aviso) {
-        s_vera_aviso = false;
-        s_vera_aviso_hasta = now + 3.0f;
-        lv_label_set_text(s_vera_estado, "TODAVIA NO");
-        lv_obj_set_style_text_color(s_vera_estado, lv_color_hex(0xffffff), 0);
-    } else if (s_vera_aviso_hasta && now > s_vera_aviso_hasta) {
-        s_vera_aviso_hasta = 0;
-        lv_label_set_text(s_vera_estado, "NO DISPONIBLE");
-        lv_obj_set_style_text_color(s_vera_estado, lv_color_hex(COLOR_DIM), 0);
+    if (s_en_vera) {
+        /* Su propio estado y su letrero; el letrero lo comparte con la cara, así que se lee con su versión. */
+        static uint32_t version_vera;
+        EXT_RAM_BSS_ATTR static char letrero[160];
+        const char *estado = mode == MUSE_MODE_IDLE ? "TOCA O MANTEN" : MODE_NAMES[mode];
+        if (strcmp(estado, lv_label_get_text(s_vera_estado)) != 0) {
+            lv_label_set_text(s_vera_estado, estado);
+            lv_obj_set_style_text_color(s_vera_estado, lv_color_hex(mode == MUSE_MODE_IDLE ? COLOR_DIM : 0x7FD6C8), 0);
+        }
+        if (muse_state_caption(letrero, sizeof(letrero), &version_vera)) lv_label_set_text(s_vera_letrero, letrero);
     }
     /* Como un reloj: sin tocar y sin conversación, vuelve a la hora (los ajustes no, por si se está escribiendo). */
     if (mode != MUSE_MODE_IDLE) {
@@ -1789,11 +1791,6 @@ bool muse_ui_en_vera(void)
     return s_en_vera;
 }
 
-void muse_ui_vera_aviso(void)
-{
-    s_vera_aviso = true;
-}
-
 void muse_ui_ir_a(const char *pagina)
 {
     strlcpy(s_ir_a, pagina, sizeof(s_ir_a));
@@ -1815,6 +1812,9 @@ static void frame_tick(lv_timer_t *timer)
     if (mode != s_last_mode) {
         if (mode == MUSE_MODE_LISTENING) {
             image_hide_locked();
+#if CONFIG_CANELITA_CARRUSEL
+            if (!s_en_vera)   /* hablando con Vera 2 no se salta a la cara de Canela */
+#endif
             muse_ui_show_face();
         }
         s_last_mode = mode;

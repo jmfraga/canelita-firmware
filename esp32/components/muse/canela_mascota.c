@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -39,7 +40,7 @@ static lv_obj_t *s_tile, *s_img, *s_nombre, *s_etapa, *s_frase, *s_semana, *s_ba
 static lv_obj_t *s_btn_comer, *s_btn_jugar, *s_btn_ejercicio;
 static lv_image_dsc_t s_dsc;
 static uint16_t *s_px;
-static estado_t s_e;
+EXT_RAM_BSS_ATTR static estado_t s_e;
 static int s_cara = -1, s_cuadro = -1, s_escala_pintada = -1;
 static float s_aviso_hasta;
 static bool s_hay_estado;
@@ -227,7 +228,7 @@ void canela_mascota_tick(float now, bool visible)
 {
     if (!s_tile || !visible) return;
     canela_mascota_pedir(60);
-    static char crudo[1024];
+    EXT_RAM_BSS_ATTR static char crudo[1024];   /* PSRAM: la RAM interna es para TLS */
     int edad = 0;
     bool fallo = false, pend = false;
     if (canela_mascota_leer(crudo, sizeof(crudo), &edad, &fallo, &pend)) {

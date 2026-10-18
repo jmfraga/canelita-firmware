@@ -166,7 +166,8 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
-bool canela_live_start(const char *url_base, const char *cf_id, const char *cf_secret, const char *token)
+bool canela_live_start(const char *url_base, const char *cf_id, const char *cf_secret, const char *token,
+                       const char *agente)
 {
     canela_live_stop();
     if (!s_lock) s_lock = xSemaphoreCreateMutex();
@@ -188,7 +189,7 @@ bool canela_live_start(const char *url_base, const char *cf_id, const char *cf_s
     /* https://host → wss://host */
     char uri[200];
     const char *host = strstr(url_base, "://");
-    snprintf(uri, sizeof(uri), "wss://%s/v1/agentes/canela/live", host ? host + 3 : url_base);
+    snprintf(uri, sizeof(uri), "wss://%s/v1/agentes/%s/live", host ? host + 3 : url_base, agente);
     static char headers[512];
     snprintf(headers, sizeof(headers),
              "CF-Access-Client-Id: %s\r\nCF-Access-Client-Secret: %s\r\nAuthorization: Bearer %s\r\n",
