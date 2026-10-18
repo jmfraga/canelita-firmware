@@ -220,13 +220,19 @@ static int16_t *mp3_to_pcm(const uint8_t *mp3, size_t len, size_t *out_frames)
 
 /* Un turno para la tarea de red: de voz (texto NULL; el audio lo va dejando
  * muse_hatch_turn_audio en s_turn) o escrito por la consola. */
-typedef struct { char *texto; uint32_t gen; bool agenda; } job_t;
+typedef struct { char *texto; uint32_t gen; bool agenda; bool mascota; char accion[12]; int minutos; } job_t;
 
 /* ---- Agenda (pantalla del reloj) ---- */
 #define AGENDA_MAX 2048
 static char s_agenda[AGENDA_MAX];
 static int64_t s_agenda_us;            /* cuándo llegó la última (0: nunca) */
 static volatile bool s_agenda_pend, s_agenda_fallo;
+
+/* ---- Mascota de bolsillo (página del colgante) ---- */
+#define MASCOTA_MAX 1024
+static char s_mascota[MASCOTA_MAX];
+static int64_t s_mascota_us;
+static volatile bool s_mascota_pend, s_mascota_fallo;
 
 static const char *http_error(int status)
 {
@@ -483,13 +489,14 @@ done:
  * PSRAM. No se borra a sí misma: una tarea con pila en PSRAM no puede liberarse sola. */
 static QueueHandle_t s_jobs;
 
-/* GET de la agenda: texto plano corto. Se translitera a ASCII para las fuentes de la pantalla. */
-static void procesar_agenda(void)
+/* Petición corta de texto plano a canela-web: GET si `json` es NULL, si no POST con ese cuerpo. Devuelve los
+ * bytes leídos (ya en ASCII, para las fuentes de la pantalla) o -1 si no llegó un 200. */
+static int http_texto(const char *ruta, const char *json, char *buf, int cap)
 {
     char url[200];
-    snprintf(url, sizeof(url), "%s/v1/agentes/" AGENTE "/agenda", s_url);
+    snprintf(url, sizeof(url), "%s/v1/agentes/" AGENTE "/%s", s_url, ruta);
     esp_http_client_config_t cfg = {
-        .url = url, .method = HTTP_METHOD_GET, .timeout_ms = 20000,
+        .url = url, .method = json ? HTTP_METHOD_POST : HTTP_METHOD_GET, .timeout_ms = 20000,
         .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 2048, .buffer_size_tx = 1024,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
@@ -498,20 +505,33 @@ static void procesar_agenda(void)
     esp_http_client_set_header(c, "CF-Access-Client-Id", s_cf_id);
     esp_http_client_set_header(c, "CF-Access-Client-Secret", s_cf_secret);
     esp_http_client_set_header(c, "Authorization", auth);
-    static char buf[AGENDA_MAX];
-    int len = -1;
-    if (esp_http_client_open(c, 0) == ESP_OK) {
+    if (json) esp_http_client_set_header(c, "Content-Type", "application/json");
+    int len = -1, n = json ? (int)strlen(json) : 0;
+    if (esp_http_client_open(c, n) == ESP_OK && (!n || esp_http_client_write(c, json, n) == n)) {
         esp_http_client_fetch_headers(c);
-        if (esp_http_client_get_status_code(c) == 200) {
+        int st = esp_http_client_get_status_code(c);
+        if (st == 200) {
             len = 0;
             int r;
-            while (len < AGENDA_MAX - 1 && (r = esp_http_client_read(c, buf + len, AGENDA_MAX - 1 - len)) > 0) len += r;
+            while (len < cap - 1 && (r = esp_http_client_read(c, buf + len, cap - 1 - len)) > 0) len += r;
+        } else {
+            ESP_LOGW(TAG, "%s: HTTP %d", ruta, st);
         }
     }
     esp_http_client_cleanup(c);
     if (len >= 0) {
         buf[len] = 0;
         ascii_es(buf);
+    }
+    return len;
+}
+
+/* GET de la agenda: texto plano corto. */
+static void procesar_agenda(void)
+{
+    static char buf[AGENDA_MAX];
+    int len = http_texto("agenda", NULL, buf, sizeof(buf));
+    if (len >= 0) {
         xSemaphoreTake(s_lock, portMAX_DELAY);
         strlcpy(s_agenda, buf, sizeof(s_agenda));
         s_agenda_us = esp_timer_get_time();
@@ -525,6 +545,29 @@ static void procesar_agenda(void)
     s_agenda_pend = false;
 }
 
+/* Estado de la mascota, o un cuidado (comer, jugar, ejercicio) que devuelve el estado nuevo. */
+static void procesar_mascota(const job_t *job)
+{
+    static char buf[MASCOTA_MAX];
+    char json[64];
+    if (job->accion[0]) {
+        snprintf(json, sizeof(json), "{\"accion\":\"%s\",\"minutos\":%d}", job->accion, job->minutos);
+    }
+    int len = http_texto("mascota", job->accion[0] ? json : NULL, buf, sizeof(buf));
+    if (len > 0) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        strlcpy(s_mascota, buf, sizeof(s_mascota));
+        s_mascota_us = esp_timer_get_time();
+        xSemaphoreGive(s_lock);
+        s_mascota_fallo = false;
+        ESP_LOGI(TAG, "mascota%s%s: %d bytes", job->accion[0] ? " " : "", job->accion, len);
+    } else {
+        s_mascota_fallo = true;
+        ESP_LOGW(TAG, "mascota: no llegó");
+    }
+    s_mascota_pend = false;
+}
+
 static void worker_loop(void *arg)
 {
     (void)arg;
@@ -533,6 +576,9 @@ static void worker_loop(void *arg)
         if (xQueueReceive(s_jobs, &job, portMAX_DELAY) != pdTRUE) continue;
         if (job->agenda) {
             procesar_agenda();
+            free(job);
+        } else if (job->mascota) {
+            procesar_mascota(job);
             free(job);
         } else {
             procesar(job);
@@ -557,7 +603,7 @@ void muse_hatch_start(void)
 {
     s_events = xQueueCreate(8, sizeof(ev_t));
     s_lock = xSemaphoreCreateMutex();
-    s_jobs = xQueueCreate(2, sizeof(job_t *));
+    s_jobs = xQueueCreate(4, sizeof(job_t *));   /* turno + agenda + mascota */
     if (xTaskCreatePinnedToCoreWithCaps(worker_loop, "canelita", 48 * 1024, NULL, 5, NULL, 0,
                                         MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "no pude crear la tarea de canelita");
@@ -628,6 +674,46 @@ bool canela_agenda_leer(char *out, size_t cap, int *edad_s, bool *fallo)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     strlcpy(out, s_agenda, cap);
     if (edad_s) *edad_s = (int)((esp_timer_get_time() - s_agenda_us) / 1000000);
+    xSemaphoreGive(s_lock);
+    return true;
+}
+
+static void encargar_mascota(const char *accion, int minutos)
+{
+    if (s_mascota_pend || !s_jobs || !configured() || !muse_wifi_connected()) return;
+    job_t *job = calloc(1, sizeof(*job));
+    if (!job) return;
+    job->mascota = true;
+    if (accion) strlcpy(job->accion, accion, sizeof(job->accion));
+    job->minutos = minutos;
+    s_mascota_pend = true;
+    if (xQueueSend(s_jobs, &job, 0) != pdTRUE) {
+        free(job);
+        s_mascota_pend = false;
+    }
+}
+
+void canela_mascota_pedir(int edad_max_s)
+{
+    if (s_mascota_us && esp_timer_get_time() - s_mascota_us < (int64_t)edad_max_s * 1000000) return;
+    encargar_mascota(NULL, 0);
+}
+
+bool canela_mascota_accion(const char *accion, int minutos)
+{
+    if (s_mascota_pend) return false;
+    encargar_mascota(accion, minutos);
+    return s_mascota_pend;
+}
+
+bool canela_mascota_leer(char *out, size_t cap, int *edad_s, bool *fallo, bool *pendiente)
+{
+    if (fallo) *fallo = s_mascota_fallo;
+    if (pendiente) *pendiente = s_mascota_pend;
+    if (!s_lock || !s_mascota_us) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    strlcpy(out, s_mascota, cap);
+    if (edad_s) *edad_s = (int)((esp_timer_get_time() - s_mascota_us) / 1000000);
     xSemaphoreGive(s_lock);
     return true;
 }

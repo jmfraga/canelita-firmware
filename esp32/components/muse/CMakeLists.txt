@@ -44,6 +44,9 @@ if(CONFIG_MUSE_ENABLED)
         "muse_ble.c")
     if(CONFIG_CANELITA_CHAT)
         list(APPEND srcs "canela_chat.c" "canela_live.c")   # canelita: turnos y llamada live hacia Canela
+        if(CONFIG_CANELITA_CARRUSEL)
+            list(APPEND srcs "canela_mascota.c")   # canelita: mascota de bolsillo (pagina del colgante)
+        endif()
     elseif(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
         list(APPEND embed "test_reply.mp3")   # muse_hatch_mp3_selftest

@@ -619,6 +619,13 @@ static bool console_command(char *line, bool whole)
         set_face(line + 5);
         return true;
     }
+#if CONFIG_CANELITA_CARRUSEL
+    if (!strncmp(line, "pagina=", 7)) {   /* banco: reloj, agenda, canela, vera, mascota, ajustes */
+        muse_state_poke();   /* como un toque: despierta la pantalla */
+        muse_ui_ir_a(line + 7);
+        return true;
+    }
+#endif
     if (strncmp(line, "chat", 4) != 0) {
         return false;
     }

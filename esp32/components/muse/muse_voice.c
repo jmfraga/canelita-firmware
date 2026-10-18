@@ -30,6 +30,7 @@
 
 #include "muse_adpcm.h"
 #include "muse_audio.h"
+#include "muse_ui.h"
 #include "muse_board.h"
 #include "muse_chat.h"
 #include "muse_input.h"
@@ -973,6 +974,14 @@ static void voice_task(void *arg)
         if (wake && !held_on_waking()) {
             continue;   /* a tap: it only woke Muse */
         }
+#if CONFIG_CANELITA_CARRUSEL
+        if (muse_ui_en_vera()) {
+            /* Vera 2 todavía no tiene cuerpo aquí: el botón no abre a Canela en su lugar. */
+            muse_ui_vera_aviso();
+            pending_down = false;
+            continue;
+        }
+#endif
         muse_wifi_power(MUSE_WIFI_FULL);
         if (!can_record()) {
             pending_down = false;

@@ -175,6 +175,16 @@ menu "Muse"
             puerta de voz de canela-web y la respuesta llega en MP3 y se habla.
             Configuración por USB con los comandos de consola canelita.*.
 
+    config CANELITA_CARRUSEL
+        bool "canelita: paginas Reloj / Canela / Vera / Mascota (colgante)"
+        depends on CANELITA_CHAT && MUSE_BOARD_WAVESHARE_S3_175C
+        default y
+        help
+            En el colgante: al centro solo el reloj (arriba, la agenda); a la
+            derecha los agentes (Canela, y hacia arriba Vera); a la izquierda la
+            mascota de bolsillo; hasta la derecha los ajustes. El reloj 2.06 se
+            queda con su caratula de Canela con la hora.
+
     config MUSE_HATCH
         bool "Muse's own voice session"
         depends on MUSE_ENABLED

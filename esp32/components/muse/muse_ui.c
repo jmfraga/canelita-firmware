@@ -94,7 +94,12 @@ static lv_indev_t *s_indev;
 static lv_obj_t *s_tv;
 static lv_obj_t *s_face;
 static lv_obj_t *s_settings;
-static lv_obj_t *s_dots[2];
+#if CONFIG_CANELITA_CARRUSEL
+#define N_DOTS 4   /* mascota, reloj, agentes, ajustes */
+#else
+#define N_DOTS 2
+#endif
+static lv_obj_t *s_dots[N_DOTS];
 static lv_obj_t *s_wifi_icon;
 static lv_obj_t *s_ble_icon;
 static lv_obj_t *s_cover;
@@ -118,6 +123,21 @@ static lv_obj_t *s_clock_lbl, *s_date_lbl;
 /* Agenda: deslizando hacia arriba desde la carátula. */
 static lv_obj_t *s_agenda_tile, *s_agenda_lbl, *s_agenda_pie;
 #endif
+#endif
+#if CONFIG_CANELITA_CARRUSEL
+/* Colgante: Mascota | Reloj (arriba se ve la agenda) | Canela (arriba se ve Vera 2) | Ajustes.
+ * La mesa de IAL Core (DECISION_ESP32_VERA2): la identidad activa siempre visible y nunca cambia
+ * en silencio; si Vera 2 no está, no contesta Canela en su lugar. */
+#include "canela_chat.h"
+#include "canela_mascota.h"
+static lv_obj_t *s_reloj_tile, *s_mascota_tile, *s_vera_tile;
+static lv_obj_t *s_clock_lbl, *s_date_lbl, *s_reloj_bat;
+static lv_obj_t *s_agenda_tile, *s_agenda_lbl, *s_agenda_pie;
+static lv_obj_t *s_vera_estado;
+static float s_ultimo_toque, s_vera_aviso_hasta;
+static volatile bool s_en_vera, s_vera_aviso;
+static char s_ir_a[12];   /* pedido de la consola, lo atiende paginas_tick */
+#define VOLVER_AL_RELOJ_S 30.0f   /* sin tocar y sin conversación, cualquier página vuelve al reloj */
 #endif
 static lv_obj_t *s_caption_lbl;
 static lv_obj_t *s_reply_lbl;   /* full layout: the reply's page while answering */
@@ -800,6 +820,141 @@ static void on_ring_draw(lv_event_t *e)
     layer->_clip_area = clip;
 }
 
+#if CONFIG_CANELITA_CARRUSEL
+static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color);
+
+static lv_obj_t *texto_grande(lv_obj_t *padre, uint32_t color, int escala)
+{
+    /* La letra pixelada de la interfaz agrandada, a juego con la cara; sin fuente nueva. */
+    lv_obj_t *l = make_label(padre, &lv_font_unscii_16, color);
+    lv_obj_set_style_transform_scale(l, escala * 256, 0);
+    lv_obj_set_style_transform_pivot_x(l, lv_pct(50), 0);
+    lv_obj_set_style_transform_pivot_y(l, lv_pct(50), 0);
+    return l;
+}
+
+static lv_obj_t *pista(lv_obj_t *padre, const char *texto, lv_align_t al, int x, int y)
+{
+    lv_obj_t *l = make_label(padre, &lv_font_unscii_8, COLOR_DOT_OFF);
+    lv_label_set_text(l, texto);
+    lv_obj_align(l, al, x, y);
+    return l;
+}
+
+static void build_paginas(void)
+{
+    /* Reloj: solo la hora, la fecha y la batería. */
+    lv_obj_set_scrollbar_mode(s_reloj_tile, LV_SCROLLBAR_MODE_OFF);
+    s_clock_lbl = texto_grande(s_reloj_tile, 0xffffff, 4);
+    lv_obj_set_style_text_letter_space(s_clock_lbl, 1, 0);
+    lv_obj_align(s_clock_lbl, LV_ALIGN_CENTER, 0, -18);
+    s_date_lbl = texto_grande(s_reloj_tile, COLOR_DIM, 2);
+    lv_obj_set_style_text_letter_space(s_date_lbl, 2, 0);
+    lv_obj_align(s_date_lbl, LV_ALIGN_CENTER, 0, 62);
+    s_reloj_bat = make_label(s_reloj_tile, &lv_font_unscii_8, COLOR_DIM);
+    lv_obj_align(s_reloj_bat, LV_ALIGN_TOP_MID, 0, 46);
+    pista(s_reloj_tile, "^ AGENDA", LV_ALIGN_BOTTOM_MID, 0, -44);
+    pista(s_reloj_tile, "<", LV_ALIGN_LEFT_MID, 22, 0);
+    pista(s_reloj_tile, ">", LV_ALIGN_RIGHT_MID, -22, 0);
+
+    /* Agenda: las próximas 24 h. El círculo deja menos ancho arriba y abajo. */
+    lv_obj_set_scrollbar_mode(s_agenda_tile, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_t *titulo = make_label(s_agenda_tile, &lv_font_unscii_16, COLOR_ACCENT);
+    lv_obj_set_style_text_letter_space(titulo, 2, 0);
+    lv_label_set_text(titulo, "HOY");
+    lv_obj_align(titulo, LV_ALIGN_TOP_MID, 0, 44);
+    s_agenda_lbl = make_label(s_agenda_tile, &lv_font_unscii_16, 0xffffff);
+    lv_obj_set_width(s_agenda_lbl, s_w - 110);
+    lv_obj_set_style_text_align(s_agenda_lbl, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_line_space(s_agenda_lbl, 6, 0);
+    lv_label_set_long_mode(s_agenda_lbl, LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_align(s_agenda_lbl, LV_ALIGN_TOP_LEFT, 55, 84);
+    lv_label_set_text(s_agenda_lbl, "CARGANDO...");
+    s_agenda_pie = make_label(s_agenda_tile, &lv_font_unscii_8, COLOR_DIM);
+    lv_obj_align(s_agenda_pie, LV_ALIGN_BOTTOM_MID, 0, -40);
+
+    /* Vera 2: su página existe aunque ella todavía no esté conectada. */
+    lv_obj_set_scrollbar_mode(s_vera_tile, LV_SCROLLBAR_MODE_OFF);
+    pista(s_vera_tile, "v CANELA", LV_ALIGN_TOP_MID, 0, 36);
+    lv_obj_t *vera = texto_grande(s_vera_tile, 0x7FD6C8, 3);
+    lv_obj_set_style_text_letter_space(vera, 2, 0);
+    lv_label_set_text(vera, "VERA 2");
+    lv_obj_align(vera, LV_ALIGN_CENTER, 0, -40);
+    s_vera_estado = make_label(s_vera_tile, &lv_font_unscii_16, COLOR_DIM);
+    lv_label_set_text(s_vera_estado, "NO DISPONIBLE");
+    lv_obj_align(s_vera_estado, LV_ALIGN_CENTER, 0, 30);
+    lv_obj_t *nota = make_label(s_vera_tile, &lv_font_unscii_8, COLOR_DIM);
+    lv_obj_set_width(nota, s_w - 140);
+    lv_obj_set_style_text_align(nota, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(nota, LV_LABEL_LONG_MODE_WRAP);
+    lv_label_set_text(nota, "AUN NO ESTA CONECTADA A ESTE CUERPO.\nCANELA NO CONTESTA POR ELLA.");
+    lv_obj_align(nota, LV_ALIGN_CENTER, 0, 74);
+
+    /* La identidad activa, siempre a la vista (mesa IAL Core): en la cara de Canela, su nombre. */
+    lv_obj_t *quien = make_label(s_face, &lv_font_unscii_8, COLOR_ACCENT);
+    lv_obj_set_style_text_letter_space(quien, 2, 0);
+    lv_label_set_text(quien, "CANELA   ^ VERA 2");
+    lv_obj_align(quien, LV_ALIGN_BOTTOM_MID, 0, -30);
+
+    /* Mascota de bolsillo. */
+    lv_obj_set_scrollbar_mode(s_mascota_tile, LV_SCROLLBAR_MODE_OFF);
+    canela_mascota_build(s_mascota_tile, s_w, s_h);
+}
+#endif
+
+#if (CONFIG_MUSE_BOARD_WAVESHARE_S3_206 || CONFIG_CANELITA_CARRUSEL) && CONFIG_CANELITA_CHAT
+/* Agenda de las próximas 24 h: sólo mientras se ve su página (cuida la batería); se renueva a lo más cada minuto. */
+static void agenda_pintar(void)
+{
+    canela_agenda_pedir(60);
+    static char crudo[2048], vista[2400];
+    int edad = 0;
+    bool fallo = false;
+    if (canela_agenda_leer(crudo, sizeof(crudo), &edad, &fallo)) {
+        size_t o = 0;
+        for (char *l = crudo, *sig; l && *l && o < sizeof(vista) - 64; l = sig) {
+            sig = strchr(l, '\n');
+            if (sig) *sig++ = 0;
+            char *tab = strchr(l, '\t');
+            if (!strcmp(l, "MANANA")) {
+                o += snprintf(vista + o, sizeof(vista) - o, "%s- MANANA -\n", o ? "\n" : "");
+            } else if (tab) {
+                *tab = 0;
+                o += snprintf(vista + o, sizeof(vista) - o, "%-5.11s %s\n", l, tab + 1);
+            }
+        }
+        if (!o) strlcpy(vista, "NADA EN LAS PROXIMAS 24 H", sizeof(vista));
+        if (strcmp(vista, lv_label_get_text(s_agenda_lbl)) != 0) lv_label_set_text(s_agenda_lbl, vista);
+        char pie[48];
+        snprintf(pie, sizeof(pie), fallo ? "SIN CONEXION - HACE %d MIN" : "HACE %d MIN", edad / 60);
+        if (edad < 60 && !fallo) strlcpy(pie, "AL DIA", sizeof(pie));
+        if (strcmp(pie, lv_label_get_text(s_agenda_pie)) != 0) lv_label_set_text(s_agenda_pie, pie);
+    } else if (fallo && strcmp(lv_label_get_text(s_agenda_lbl), "SIN CONEXION") != 0) {
+        lv_label_set_text(s_agenda_lbl, "SIN CONEXION");
+    }
+}
+#endif
+
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206 || CONFIG_CANELITA_CARRUSEL
+/* La hora y la fecha en español. Antes de la primera sincronía (año < 2025) no se inventa: se dejan rayas. */
+static void hora_fecha(char *hora, size_t nh, char *fecha, size_t nf)
+{
+    static const char *const DIAS[] = { "DOM", "LUN", "MAR", "MIE", "JUE", "VIE", "SAB" };
+    static const char *const MESES[] = { "ENE", "FEB", "MAR", "ABR", "MAY", "JUN",
+                                          "JUL", "AGO", "SEP", "OCT", "NOV", "DIC" };
+    time_t t = time(NULL);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    if (tm.tm_year + 1900 >= 2025) {
+        snprintf(hora, nh, "%02d:%02d", tm.tm_hour, tm.tm_min);
+        snprintf(fecha, nf, "%s %d %s", DIAS[tm.tm_wday], tm.tm_mday, MESES[tm.tm_mon]);
+    } else {
+        strlcpy(hora, "--:--", nh);
+        strlcpy(fecha, "", nf);
+    }
+}
+#endif
+
 static void build_screen(void)
 {
     lv_obj_t *scr = lv_screen_active();
@@ -814,7 +969,13 @@ static void build_screen(void)
         lv_obj_set_style_bg_color(s_tv, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_tv, LV_OPA_COVER, 0);
         lv_obj_set_scrollbar_mode(s_tv, LV_SCROLLBAR_MODE_OFF);
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206 && CONFIG_CANELITA_CHAT
+#if CONFIG_CANELITA_CARRUSEL
+        s_mascota_tile = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT);
+        s_reloj_tile = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT | LV_DIR_BOTTOM);
+        s_agenda_tile = lv_tileview_add_tile(s_tv, 1, 1, LV_DIR_TOP);
+        s_face = lv_tileview_add_tile(s_tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT | LV_DIR_BOTTOM);
+        s_vera_tile = lv_tileview_add_tile(s_tv, 2, 1, LV_DIR_TOP);
+#elif CONFIG_MUSE_BOARD_WAVESHARE_S3_206 && CONFIG_CANELITA_CHAT
         s_face = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT | LV_DIR_BOTTOM);   /* abajo: la agenda */
 #else
         s_face = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT);
@@ -822,7 +983,12 @@ static void build_screen(void)
         /* It never scrolls, but LVGL would size its scrollbars from all its
          * children every time it draws any part of it. */
         lv_obj_set_scrollbar_mode(s_face, LV_SCROLLBAR_MODE_OFF);
+#if CONFIG_CANELITA_CARRUSEL
+        s_settings = lv_tileview_add_tile(s_tv, 3, 0, LV_DIR_LEFT);
+        build_paginas();
+#else
         s_settings = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT);
+#endif
 #if CONFIG_MUSE_BOARD_WAVESHARE_S3_206 && CONFIG_CANELITA_CHAT
         s_agenda_tile = lv_tileview_add_tile(s_tv, 0, 1, LV_DIR_TOP);
         lv_obj_set_scrollbar_mode(s_agenda_tile, LV_SCROLLBAR_MODE_OFF);
@@ -1058,6 +1224,9 @@ static void on_camera_hint_clicked(lv_event_t *e)
 static void on_any_press(lv_event_t *e)
 {
     (void)e;
+#if CONFIG_CANELITA_CARRUSEL
+    s_ultimo_toque = (float)esp_timer_get_time() / 1e6f;
+#endif
     muse_state_poke();
 }
 
@@ -1066,7 +1235,7 @@ static void build_overlays(void)
     lv_obj_t *scr = lv_screen_active();
 
     /* Page dots. */
-    for (int i = 0; i < 2 && s_tv; i++) {
+    for (int i = 0; i < N_DOTS && s_tv; i++) {
         lv_obj_t *d = lv_obj_create(scr);
         lv_obj_remove_style_all(d);
         lv_obj_set_size(d, 8, 8);
@@ -1074,7 +1243,7 @@ static void build_overlays(void)
         lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(d, lv_color_hex(COLOR_DOT_OFF), 0);
         lv_obj_remove_flag(d, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, i ? 8 : -8, -14);
+        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, (2 * i - (N_DOTS - 1)) * 8, -14);
         s_dots[i] = d;
     }
 
@@ -1220,21 +1389,23 @@ static void update_chrome(float now)
     s_next_settings_tick = now + SETTINGS_TICK_S;
 
     if (s_tv) {
-        int page = lv_tileview_get_tile_active(s_tv) == s_settings;
+        lv_obj_t *activa = lv_tileview_get_tile_active(s_tv);
+        int page = activa == s_settings;
+        int col = s_w ? lv_obj_get_x(activa) / s_w : 0;   /* el punto encendido: la columna de la página */
         bool subpage = muse_settings_ui_in_subpage();
         bool swipe = !page || !subpage;
         if (swipe != lv_obj_has_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE)) {
             lv_obj_set_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE, swipe);
         }
-        int shown = page * 2 + subpage;
+        int shown = col * 2 + subpage;
         if (shown != s_shown_page) {
-            for (int i = 0; i < 2; i++) {
-                lv_obj_set_style_bg_color(s_dots[i], lv_color_hex(i == page ? COLOR_ACCENT : COLOR_DOT_OFF), 0);
+            for (int i = 0; i < N_DOTS; i++) {
+                lv_obj_set_style_bg_color(s_dots[i], lv_color_hex(i == col ? COLOR_ACCENT : COLOR_DOT_OFF), 0);
                 lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, page && subpage);
             }
             s_shown_page = shown;
         }
-        muse_settings_ui_tick(lv_obj_get_scroll_x(s_tv) > 0);
+        muse_settings_ui_tick(lv_obj_get_scroll_x(s_tv) > lv_obj_get_x(s_face));
     }
 
     /* Joining, the icon blinks: the compact layout has no state label. */
@@ -1376,21 +1547,9 @@ static void update_power(float now)
         lv_label_set_text(s_power_lbl, buf);
     }
 #if CONFIG_MUSE_BOARD_WAVESHARE_S3_206
-    /* La hora, una vez por segundo. Antes de la primera sincronía (año < 2025) no se inventa: se dejan rayas. */
-    static const char *const DIAS[] = { "DOM", "LUN", "MAR", "MIE", "JUE", "VIE", "SAB" };
-    static const char *const MESES[] = { "ENE", "FEB", "MAR", "ABR", "MAY", "JUN",
-                                          "JUL", "AGO", "SEP", "OCT", "NOV", "DIC" };
-    time_t t = time(NULL);
-    struct tm tm;
-    localtime_r(&t, &tm);
+    /* La hora, una vez por segundo. */
     char hora[8], fecha[20];
-    if (tm.tm_year + 1900 >= 2025) {
-        snprintf(hora, sizeof(hora), "%02d:%02d", tm.tm_hour, tm.tm_min);
-        snprintf(fecha, sizeof(fecha), "%s %d %s", DIAS[tm.tm_wday], tm.tm_mday, MESES[tm.tm_mon]);
-    } else {
-        strlcpy(hora, "--:--", sizeof(hora));
-        strlcpy(fecha, "", sizeof(fecha));
-    }
+    hora_fecha(hora, sizeof(hora), fecha, sizeof(fecha));
     if (strcmp(hora, lv_label_get_text(s_clock_lbl)) != 0) {
         lv_label_set_text(s_clock_lbl, hora);
     }
@@ -1398,34 +1557,8 @@ static void update_power(float now)
         lv_label_set_text(s_date_lbl, fecha);
     }
 #if CONFIG_CANELITA_CHAT
-    /* Agenda: sólo mientras se ve su página (cuida la batería); se renueva a lo más cada minuto. */
     if (s_agenda_tile && lv_tileview_get_tile_active(s_tv) == s_agenda_tile) {
-        canela_agenda_pedir(60);
-        static char crudo[2048], vista[2400];
-        int edad = 0;
-        bool fallo = false;
-        if (canela_agenda_leer(crudo, sizeof(crudo), &edad, &fallo)) {
-            size_t o = 0;
-            for (char *l = crudo, *sig; l && *l && o < sizeof(vista) - 64; l = sig) {
-                sig = strchr(l, '\n');
-                if (sig) *sig++ = 0;
-                char *tab = strchr(l, '\t');
-                if (!strcmp(l, "MANANA")) {
-                    o += snprintf(vista + o, sizeof(vista) - o, "%s- MANANA -\n", o ? "\n" : "");
-                } else if (tab) {
-                    *tab = 0;
-                    o += snprintf(vista + o, sizeof(vista) - o, "%-5.11s %s\n", l, tab + 1);
-                }
-            }
-            if (!o) strlcpy(vista, "NADA EN LAS PROXIMAS 24 H", sizeof(vista));
-            if (strcmp(vista, lv_label_get_text(s_agenda_lbl)) != 0) lv_label_set_text(s_agenda_lbl, vista);
-            char pie[48];
-            snprintf(pie, sizeof(pie), fallo ? "SIN CONEXION - HACE %d MIN" : "HACE %d MIN", edad / 60);
-            if (edad < 60 && !fallo) strlcpy(pie, "AL DIA", sizeof(pie));
-            if (strcmp(pie, lv_label_get_text(s_agenda_pie)) != 0) lv_label_set_text(s_agenda_pie, pie);
-        } else if (fallo && strcmp(lv_label_get_text(s_agenda_lbl), "SIN CONEXION") != 0) {
-            lv_label_set_text(s_agenda_lbl, "SIN CONEXION");
-        }
+        agenda_pintar();
     }
 #endif
     /* En reposo: con letrero, la hora se esconde; a los LETRERO_S el letrero se va y vuelve la hora. */
@@ -1600,6 +1733,73 @@ void muse_ui_request_snapshot(void)
     s_snapshot = true;
 }
 
+#if CONFIG_CANELITA_CARRUSEL
+/* Las páginas que no son la cara: corren aunque Canela no esté en pantalla. */
+static void paginas_tick(muse_mode_t mode, float now)
+{
+    static float siguiente;
+    if (s_ir_a[0]) {
+        const char *n = s_ir_a;
+        lv_obj_t *t = !strcmp(n, "reloj") ? s_reloj_tile : !strcmp(n, "agenda") ? s_agenda_tile
+                    : !strcmp(n, "canela") ? s_face : !strcmp(n, "vera") ? s_vera_tile
+                    : !strcmp(n, "mascota") ? s_mascota_tile : !strcmp(n, "ajustes") ? s_settings : NULL;
+        if (t) lv_tileview_set_tile(s_tv, t, LV_ANIM_OFF);
+        ESP_LOGI(TAG, "pagina=%s %s", n, t ? "ok" : "desconocida");
+        s_ir_a[0] = 0;
+        s_ultimo_toque = now;
+        siguiente = 0;
+    }
+    lv_obj_t *activa = lv_tileview_get_tile_active(s_tv);
+    s_en_vera = activa == s_vera_tile;
+    if (s_vera_aviso) {
+        s_vera_aviso = false;
+        s_vera_aviso_hasta = now + 3.0f;
+        lv_label_set_text(s_vera_estado, "TODAVIA NO");
+        lv_obj_set_style_text_color(s_vera_estado, lv_color_hex(0xffffff), 0);
+    } else if (s_vera_aviso_hasta && now > s_vera_aviso_hasta) {
+        s_vera_aviso_hasta = 0;
+        lv_label_set_text(s_vera_estado, "NO DISPONIBLE");
+        lv_obj_set_style_text_color(s_vera_estado, lv_color_hex(COLOR_DIM), 0);
+    }
+    /* Como un reloj: sin tocar y sin conversación, vuelve a la hora (los ajustes no, por si se está escribiendo). */
+    if (mode != MUSE_MODE_IDLE) {
+        s_ultimo_toque = now;
+    } else if (activa != s_reloj_tile && activa != s_settings && now - s_ultimo_toque > VOLVER_AL_RELOJ_S
+               && lv_obj_get_scroll_x(s_tv) == lv_obj_get_x(activa)) {
+        lv_tileview_set_tile(s_tv, s_reloj_tile, LV_ANIM_ON);
+        s_ultimo_toque = now;
+    }
+    if (now < siguiente) return;
+    siguiente = now + 0.25f;   /* la cola de la mascota se mueve a 4 cuadros por segundo como mucho */
+    canela_mascota_tick(now, activa == s_mascota_tile);
+    if (activa == s_agenda_tile) agenda_pintar();
+    if (activa != s_reloj_tile) return;
+    char hora[8], fecha[20], bat[24];
+    hora_fecha(hora, sizeof(hora), fecha, sizeof(fecha));
+    if (strcmp(hora, lv_label_get_text(s_clock_lbl)) != 0) lv_label_set_text(s_clock_lbl, hora);
+    if (strcmp(fecha, lv_label_get_text(s_date_lbl)) != 0) lv_label_set_text(s_date_lbl, fecha);
+    muse_power_t p = muse_state_power();
+    if (p.battery_pct < 0) strlcpy(bat, p.usb ? "USB" : "", sizeof(bat));
+    else snprintf(bat, sizeof(bat), "%s%d%%", p.charging ? "CARGANDO " : "", p.battery_pct);
+    if (strcmp(bat, lv_label_get_text(s_reloj_bat)) != 0) lv_label_set_text(s_reloj_bat, bat);
+}
+
+bool muse_ui_en_vera(void)
+{
+    return s_en_vera;
+}
+
+void muse_ui_vera_aviso(void)
+{
+    s_vera_aviso = true;
+}
+
+void muse_ui_ir_a(const char *pagina)
+{
+    strlcpy(s_ir_a, pagina, sizeof(s_ir_a));
+}
+#endif
+
 static void frame_tick(lv_timer_t *timer)
 {
     if (s_snapshot) {
@@ -1623,6 +1823,11 @@ static void frame_tick(lv_timer_t *timer)
         return;
     }
     update_chrome(now);
+#if CONFIG_CANELITA_CARRUSEL
+    if (s_tv) {
+        paginas_tick(mode, now);
+    }
+#endif
     if (muse_menu_tick(now)) {
         image_hide_locked();
         return;   /* the menu covers the face */
@@ -1630,7 +1835,7 @@ static void frame_tick(lv_timer_t *timer)
     if (s_image_dsc.data) {
         return;   /* the image covers the face */
     }
-    if (s_tv && lv_obj_get_scroll_x(s_tv) != 0) {
+    if (s_tv && (lv_obj_get_scroll_x(s_tv) != lv_obj_get_x(s_face) || lv_obj_get_scroll_y(s_tv) != 0)) {
         /* Off screen, or sliding to or from settings: hold still so the
          * slide gets the whole frame time. */
         return;
@@ -1697,6 +1902,12 @@ esp_err_t muse_ui_start(void)
         muse_menu_build(lv_screen_active(), s_w, s_h);
     }
     build_overlays();
+#if CONFIG_CANELITA_CARRUSEL
+    if (s_reloj_tile) {
+        lv_obj_update_layout(s_tv);
+        lv_tileview_set_tile(s_tv, s_reloj_tile, LV_ANIM_OFF);
+    }
+#endif
     lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
     s_ready = true;
     muse_board->display_unlock();

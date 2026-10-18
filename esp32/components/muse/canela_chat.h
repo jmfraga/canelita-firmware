@@ -16,3 +16,10 @@ bool canela_console(char *line);
  * (renglones `HH:MM<TAB>título`, `MANANA` separa) y dice hace cuántos segundos y si el último intento falló. */
 void canela_agenda_pedir(int edad_max_s);
 bool canela_agenda_leer(char *out, size_t cap, int *edad_s, bool *fallo);
+
+/* Mascota de bolsillo (GET/POST /v1/agentes/canela/mascota): renglones `clave<TAB>valor` en ASCII.
+ * pedir() la renueva si la última tiene más de `edad_max_s`; accion() encarga «comer», «jugar» o «ejercicio»
+ * (con minutos) y es false si ya había una petición en camino; leer() copia el último estado. */
+void canela_mascota_pedir(int edad_max_s);
+bool canela_mascota_accion(const char *accion, int minutos);
+bool canela_mascota_leer(char *out, size_t cap, int *edad_s, bool *fallo, bool *pendiente);

@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "sdkconfig.h"
 
 /*
  * Bring up the display and build the UI: the avatar on the first tile,
@@ -52,3 +53,12 @@ void muse_ui_camera_hint(bool visible);
 
 /* Bench testing, from any task: streams the screen over USB serial. */
 void muse_ui_request_snapshot(void);
+
+#if CONFIG_CANELITA_CARRUSEL
+/* canelita (colgante): ¿se ve la página de Vera 2? Ahí el botón no habla con Canela (la mesa: sin
+ * respaldo silencioso); aviso() le dice en pantalla que todavía no está. Seguras desde otra tarea. */
+bool muse_ui_en_vera(void);
+void muse_ui_vera_aviso(void);
+/* Banco (consola «pagina=reloj»): cambia de página como si se deslizara. */
+void muse_ui_ir_a(const char *pagina);
+#endif
