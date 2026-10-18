@@ -221,7 +221,7 @@ static int16_t *mp3_to_pcm(const uint8_t *mp3, size_t len, size_t *out_frames)
 
 /* Un turno para la tarea de red: de voz (texto NULL; el audio lo va dejando
  * muse_hatch_turn_audio en s_turn) o escrito por la consola. */
-typedef struct { char *texto; uint32_t gen; bool agenda; bool mascota; char accion[12]; int minutos; char agente[8]; } job_t;
+typedef struct { char *texto; uint32_t gen; bool agenda; bool mascota; bool imagen; char accion[24]; int minutos; char agente[8]; } job_t;
 
 /* Con quién se habla: la página activa lo elige al apretar (canela o vera). Mascota y agenda son de Canela. */
 static char s_agente[8] = "canela";
@@ -493,12 +493,12 @@ done:
  * PSRAM. No se borra a sí misma: una tarea con pila en PSRAM no puede liberarse sola. */
 static QueueHandle_t s_jobs;
 
-/* Petición corta de texto plano a canela-web: GET si `json` es NULL, si no POST con ese cuerpo. Devuelve los
- * bytes leídos (ya en ASCII, para las fuentes de la pantalla) o -1 si no llegó un 200. */
-static int http_texto(const char *ruta, const char *json, char *buf, int cap)
+/* Petición corta a canela-web: GET si `json` es NULL, si no POST con ese cuerpo. Devuelve los bytes leídos o
+ * -1 si no llegó un 200. Con `texto`, se termina en 0 y se translitera a ASCII para las fuentes de la pantalla. */
+static int http_pedir(const char *agente, const char *ruta, const char *json, char *buf, int cap, bool texto)
 {
     char url[200];
-    snprintf(url, sizeof(url), "%s/v1/agentes/" AGENTE "/%s", s_url, ruta);
+    snprintf(url, sizeof(url), "%s/v1/agentes/%s/%s", s_url, agente, ruta);
     esp_http_client_config_t cfg = {
         .url = url, .method = json ? HTTP_METHOD_POST : HTTP_METHOD_GET, .timeout_ms = 20000,
         .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 2048, .buffer_size_tx = 1024,
@@ -517,17 +517,40 @@ static int http_texto(const char *ruta, const char *json, char *buf, int cap)
         if (st == 200) {
             len = 0;
             int r;
-            while (len < cap - 1 && (r = esp_http_client_read(c, buf + len, cap - 1 - len)) > 0) len += r;
+            int tope = texto ? cap - 1 : cap;
+            while (len < tope && (r = esp_http_client_read(c, buf + len, tope - len)) > 0) len += r;
         } else {
             ESP_LOGW(TAG, "%s: HTTP %d", ruta, st);
         }
     }
     esp_http_client_cleanup(c);
-    if (len >= 0) {
+    if (len >= 0 && texto) {
         buf[len] = 0;
         ascii_es(buf);
     }
     return len;
+}
+
+static int http_texto(const char *ruta, const char *json, char *buf, int cap)
+{
+    return http_pedir(AGENTE, ruta, json, buf, cap, true);
+}
+
+/* ---- Imagen de Vera 2 (su página): 200x200 RGB565, se baja una vez y vive en PSRAM, nunca en el firmware ---- */
+#define VERA_IMG_BYTES (200 * 200 * 2)
+static uint8_t *s_vera_img;
+static volatile bool s_vera_img_lista, s_vera_img_pend;
+
+static void procesar_imagen(void)
+{
+    if (!s_vera_img) s_vera_img = heap_caps_malloc(VERA_IMG_BYTES, MALLOC_CAP_SPIRAM);
+    if (s_vera_img && http_pedir("vera", "imagen", NULL, (char *)s_vera_img, VERA_IMG_BYTES, false) == VERA_IMG_BYTES) {
+        s_vera_img_lista = true;
+        ESP_LOGI(TAG, "imagen de Vera: lista");
+    } else {
+        ESP_LOGW(TAG, "imagen de Vera: no llegó");
+    }
+    s_vera_img_pend = false;
 }
 
 /* GET de la agenda: texto plano corto. */
@@ -583,6 +606,9 @@ static void worker_loop(void *arg)
             free(job);
         } else if (job->mascota) {
             procesar_mascota(job);
+            free(job);
+        } else if (job->imagen) {
+            procesar_imagen();
             free(job);
         } else {
             procesar(job);
@@ -696,6 +722,21 @@ static void encargar_mascota(const char *accion, int minutos)
         free(job);
         s_mascota_pend = false;
     }
+}
+
+const uint8_t *canela_vera_imagen(void)
+{
+    if (s_vera_img_lista) return s_vera_img;
+    if (s_vera_img_pend || !s_jobs || !configured() || !muse_wifi_connected()) return NULL;
+    job_t *job = calloc(1, sizeof(*job));
+    if (!job) return NULL;
+    job->imagen = true;
+    s_vera_img_pend = true;
+    if (xQueueSend(s_jobs, &job, 0) != pdTRUE) {
+        free(job);
+        s_vera_img_pend = false;
+    }
+    return NULL;
 }
 
 void canela_mascota_pedir(int edad_max_s)

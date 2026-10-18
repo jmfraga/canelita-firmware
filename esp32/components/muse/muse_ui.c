@@ -134,7 +134,8 @@ static lv_obj_t *s_agenda_tile, *s_agenda_lbl, *s_agenda_pie;
 static lv_obj_t *s_reloj_tile, *s_mascota_tile, *s_vera_tile;
 static lv_obj_t *s_clock_lbl, *s_date_lbl, *s_reloj_bat;
 static lv_obj_t *s_agenda_tile, *s_agenda_lbl, *s_agenda_pie;
-static lv_obj_t *s_vera_estado, *s_vera_letrero;
+static lv_obj_t *s_vera_estado, *s_vera_letrero, *s_vera_img;
+static lv_image_dsc_t s_vera_dsc;
 static float s_ultimo_toque;
 static volatile bool s_en_vera;
 static char s_ir_a[12];   /* pedido de la consola, lo atiende paginas_tick */
@@ -876,20 +877,25 @@ static void build_paginas(void)
 
     /* Vera 2: su página existe aunque ella todavía no esté conectada. */
     lv_obj_set_scrollbar_mode(s_vera_tile, LV_SCROLLBAR_MODE_OFF);
-    pista(s_vera_tile, "v CANELA", LV_ALIGN_TOP_MID, 0, 36);
-    lv_obj_t *vera = texto_grande(s_vera_tile, 0x7FD6C8, 3);
+    pista(s_vera_tile, "v CANELA", LV_ALIGN_TOP_MID, 0, 26);
+    /* La imagen que eligió Vera: llega autenticada de canela-web; no va en el firmware ni en ningún repo. */
+    s_vera_img = lv_image_create(s_vera_tile);
+    lv_obj_set_size(s_vera_img, 200, 200);
+    lv_obj_align(s_vera_img, LV_ALIGN_TOP_MID, 0, 44);
+    lv_obj_add_flag(s_vera_img, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *vera = texto_grande(s_vera_tile, 0x7FD6C8, 2);
     lv_obj_set_style_text_letter_space(vera, 2, 0);
     lv_label_set_text(vera, "VERA 2");
-    lv_obj_align(vera, LV_ALIGN_CENTER, 0, -40);
+    lv_obj_align(vera, LV_ALIGN_TOP_MID, 0, 262);
     s_vera_estado = make_label(s_vera_tile, &lv_font_unscii_16, COLOR_DIM);
     lv_label_set_text(s_vera_estado, "TOCA O MANTEN");
-    lv_obj_align(s_vera_estado, LV_ALIGN_CENTER, 0, 30);
+    lv_obj_align(s_vera_estado, LV_ALIGN_TOP_MID, 0, 300);
     /* Lo que diga la conversación (o «VERA NO RESPONDE»): aquí, nunca en la cara de Canela. */
     s_vera_letrero = make_label(s_vera_tile, &lv_font_unscii_16, 0xffffff);
     lv_obj_set_width(s_vera_letrero, s_w - 120);
     lv_obj_set_style_text_align(s_vera_letrero, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(s_vera_letrero, LV_LABEL_LONG_MODE_WRAP);
-    lv_obj_align(s_vera_letrero, LV_ALIGN_TOP_MID, 0, 290);
+    lv_obj_align(s_vera_letrero, LV_ALIGN_TOP_MID, 0, 328);
 
     /* La identidad activa, siempre a la vista (mesa IAL Core): en la cara de Canela, su nombre. */
     lv_obj_t *quien = make_label(s_face, &lv_font_unscii_8, COLOR_ACCENT);
@@ -1744,6 +1750,11 @@ static void paginas_tick(muse_mode_t mode, float now)
         lv_obj_t *t = !strcmp(n, "reloj") ? s_reloj_tile : !strcmp(n, "agenda") ? s_agenda_tile
                     : !strcmp(n, "canela") ? s_face : !strcmp(n, "vera") ? s_vera_tile
                     : !strcmp(n, "mascota") ? s_mascota_tile : !strcmp(n, "ajustes") ? s_settings : NULL;
+        if (!t && (!strcmp(n, "anotar") || !strcmp(n, "mover") || !strcmp(n, "minutos") || !strcmp(n, "tienda"))) {
+            t = s_mascota_tile;
+            lv_tileview_set_tile(s_tv, t, LV_ANIM_OFF);
+            canela_mascota_banco(n);
+        }
         if (t) lv_tileview_set_tile(s_tv, t, LV_ANIM_OFF);
         ESP_LOGI(TAG, "pagina=%s %s", n, t ? "ok" : "desconocida");
         s_ir_a[0] = 0;
@@ -1762,6 +1773,20 @@ static void paginas_tick(muse_mode_t mode, float now)
             lv_obj_set_style_text_color(s_vera_estado, lv_color_hex(mode == MUSE_MODE_IDLE ? COLOR_DIM : 0x7FD6C8), 0);
         }
         if (muse_state_caption(letrero, sizeof(letrero), &version_vera)) lv_label_set_text(s_vera_letrero, letrero);
+        if (lv_obj_has_flag(s_vera_img, LV_OBJ_FLAG_HIDDEN)) {
+            const uint8_t *px = canela_vera_imagen();   /* la primera vez la encarga; después, ya está */
+            if (px) {
+                s_vera_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+                s_vera_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+                s_vera_dsc.header.w = 200;
+                s_vera_dsc.header.h = 200;
+                s_vera_dsc.header.stride = 400;
+                s_vera_dsc.data = px;
+                s_vera_dsc.data_size = 200 * 200 * 2;
+                lv_image_set_src(s_vera_img, &s_vera_dsc);
+                lv_obj_remove_flag(s_vera_img, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
     }
     /* Como un reloj: sin tocar y sin conversación, vuelve a la hora (los ajustes no, por si se está escribiendo). */
     if (mode != MUSE_MODE_IDLE) {

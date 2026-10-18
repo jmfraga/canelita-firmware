@@ -16,6 +16,12 @@ PALETA = {  # RGB888; '.' = transparente (fondo negro)
     "w": 0xFFFFFF,  # brillo
     "n": 0x1A1A1A,  # nariz
     "p": 0xFF6F91,  # lengua / mejillas
+    "r": 0xD9383A,  # collar
+    "y": 0xF2C230,  # placa / dorado
+    "b": 0x3A7BD9,  # pañoleta
+    "g": 0x4CAF6A,  # gorro
+    "h": 0xF4F4F4,  # banda del gorro
+    "k": 0x101010,  # armazón de lentes
 }
 
 BASE_IZQ = [
@@ -72,6 +78,20 @@ COLA = {  # cola a la derecha del cuerpo (sin reflejar), dos cuadros: arriba y a
 }
 
 
+# Accesorios: capas sobre la perrita, en coordenadas de la rejilla completa (24x22): (fila, col, texto).
+ACCESORIOS = {
+    "collar":   [(15, 7, "rrrrrrrrrr"), (16, 11, "yy")],
+    "panoleta": [(15, 7, "bbbbbbbbbb"), (16, 8, "bbbbbbbb"), (17, 10, "bbbb"), (18, 11, "bb")],
+    "gorro":    [(0, 9, "gggggg"), (1, 7, "gggggggggg"), (2, 5, "gggggggggggggg"), (3, 4, "hhhhhhhhhhhhhhhh")],
+    "lentes":   [(5, 6, "kkkk"), (5, 14, "kkkk"), (6, 6, "k"), (6, 9, "kkkkkk"), (6, 17, "k"),
+                 (7, 6, "k"), (7, 9, "k"), (7, 14, "k"), (7, 17, "k"), (8, 6, "kkkk"), (8, 14, "kkkk")],
+}
+
+
+def capa(acc: str) -> list[tuple[int, int, str]]:
+    return [(f, c + i, ch) for f, c, t in ACCESORIOS[acc] for i, ch in enumerate(t) if ch != "."]
+
+
 def dibujar(cara: str, cuadro: int) -> list[str]:
     ojos, boca, mejillas = CARAS[cara]
     izq = [list(r) for r in BASE_IZQ]
@@ -118,6 +138,18 @@ def main() -> None:
             lineas.append("        { " + ",".join(map(str, px)) + " },")
         lineas.append("    },")
     lineas.append("};")
+    lineas.append(f"#define MASCOTA_N_ACC {len(ACCESORIOS)}")
+    lineas.append("static const char *const MASCOTA_ACC[] = { " + ", ".join(f'"{a}"' for a in ACCESORIOS) + " };")
+    lineas.append("/* Capa de cada accesorio: {fila, columna, color} y termina en {255,255,0}. */")
+    lineas.append("static const uint8_t MASCOTA_ACC_PX[][3] = {")
+    inicio = []
+    for a in ACCESORIOS:
+        inicio.append(sum(len(capa(x)) + 1 for x in list(ACCESORIOS)[:list(ACCESORIOS).index(a)]))
+        for f, c, ch in capa(a):
+            lineas.append(f"    {{{f},{c},{claves.index(ch) + 1}}},")
+        lineas.append("    {255,255,0},")
+    lineas.append("};")
+    lineas.append("static const uint16_t MASCOTA_ACC_INICIO[] = { " + ", ".join(map(str, inicio)) + " };")
     destino.write_text("\n".join(lineas) + "\n")
 
     try:
@@ -137,7 +169,23 @@ def main() -> None:
                         for dx in range(esc):
                             img.putpixel(((i * (W + 2) + x + 1) * esc + dx, (cuadro * (H + 2) + y + 1) * esc + dy),
                                          (v >> 16, (v >> 8) & 255, v & 255))
-    img.save(aqui / "preview.png")
+    # Tercera fila: cada accesorio puesto sobre la cara «feliz».
+    img2 = Image.new("RGB", (img.width, img.height + (H + 2) * esc), (0, 0, 0))
+    img2.paste(img, (0, 0))
+    for i, acc in enumerate(ACCESORIOS):
+        filas = [list(r) for r in dibujar("feliz", 0)]
+        for f, c, ch in capa(acc):
+            filas[f][c] = ch
+        for y, fila in enumerate(filas):
+            for x, ch in enumerate(fila):
+                if ch == ".":
+                    continue
+                v = PALETA[ch]
+                for dy in range(esc):
+                    for dx in range(esc):
+                        img2.putpixel(((i * (W + 2) + x + 1) * esc + dx, (2 * (H + 2) + y + 1) * esc + dy),
+                                      (v >> 16, (v >> 8) & 255, v & 255))
+    img2.save(aqui / "preview.png")
 
 
 if __name__ == "__main__":

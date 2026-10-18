@@ -4,6 +4,7 @@
  */
 #pragma once
 #include <stdbool.h>
+#include <stdint.h>
 
 /* Comandos de consola canelita.* (configuración por USB). true si la línea era
  * de canelita y ya se atendió. Ver canela_chat.c. */
@@ -29,3 +30,7 @@ bool canela_mascota_leer(char *out, size_t cap, int *edad_s, bool *fallo, bool *
 void canela_agente_usar(const char *agente);
 const char *canela_agente(void);
 const char *canela_agente_nombre(void);   /* para la pantalla: «CANELA» o «VERA 2» */
+
+/* Imagen de Vera 2 para su página (200x200 RGB565): NULL mientras no ha llegado (y la encarga); luego el
+ * búfer en PSRAM. Se baja autenticada de canela-web: no viaja en el firmware ni en ningún repo. */
+const uint8_t *canela_vera_imagen(void);
