@@ -176,14 +176,15 @@ menu "Muse"
             Configuración por USB con los comandos de consola canelita.*.
 
     config CANELITA_CARRUSEL
-        bool "canelita: paginas Reloj / Canela / Vera / Mascota (colgante)"
-        depends on CANELITA_CHAT && MUSE_BOARD_WAVESHARE_S3_175C
+        bool "canelita: paginas Reloj / Canela / Vera / Mascota"
+        depends on CANELITA_CHAT && (MUSE_BOARD_WAVESHARE_S3_175C || MUSE_BOARD_WAVESHARE_S3_206)
         default y
         help
             En el colgante: al centro solo el reloj (arriba, la agenda); a la
             derecha los agentes (Canela, y hacia arriba Vera); a la izquierda la
-            mascota de bolsillo; hasta la derecha los ajustes. El reloj 2.06 se
-            queda con su caratula de Canela con la hora.
+            mascota de bolsillo; hasta la derecha los ajustes. Igual en el colgante
+            1.75C y en el reloj 2.06; apagado, el 2.06 vuelve a su caratula de
+            Canela con la hora.
 
     config MUSE_HATCH
         bool "Muse's own voice session"

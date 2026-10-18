@@ -86,6 +86,9 @@ static const char *TAG = "muse_ui";
  * level meter and settings tile, and a compact one for tiny screens (128 px)
  * where Muse fills the screen and text overlays it.
  */
+/* El reloj 2.06 sin carrusel: la cara de Canela con la hora debajo (la carátula de antes). */
+#define CANELITA_CARATULA (CONFIG_MUSE_BOARD_WAVESHARE_S3_206 && !CONFIG_CANELITA_CARRUSEL)
+
 static int s_w, s_h;
 static bool s_small;
 static bool s_tall;         /* compact, with room above and below Muse (StickS3) */
@@ -115,7 +118,7 @@ static lv_obj_t *s_bar;     /* compact layout's stand-in for the ring */
 static lv_obj_t *s_state_lbl;
 static lv_obj_t *s_name_lbl;    /* this gadget's own name, to tell it from the next one */
 static lv_obj_t *s_power_lbl;
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206
+#if CANELITA_CARATULA
 /* canelita en el reloj: la hora grande y la fecha bajo la cara de Canela. */
 static lv_obj_t *s_clock_lbl, *s_date_lbl;
 #define LETRERO_S 8.0f   /* en reposo, un letrero («LLAMADA TERMINADA»…) tapa la hora: se va a los 8 s */
@@ -982,7 +985,7 @@ static void build_screen(void)
         s_agenda_tile = lv_tileview_add_tile(s_tv, 1, 1, LV_DIR_TOP);
         s_face = lv_tileview_add_tile(s_tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT | LV_DIR_BOTTOM);
         s_vera_tile = lv_tileview_add_tile(s_tv, 2, 1, LV_DIR_TOP);
-#elif CONFIG_MUSE_BOARD_WAVESHARE_S3_206 && CONFIG_CANELITA_CHAT
+#elif CANELITA_CARATULA && CONFIG_CANELITA_CHAT
         s_face = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT | LV_DIR_BOTTOM);   /* abajo: la agenda */
 #else
         s_face = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT);
@@ -996,7 +999,7 @@ static void build_screen(void)
 #else
         s_settings = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT);
 #endif
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206 && CONFIG_CANELITA_CHAT
+#if CANELITA_CARATULA && CONFIG_CANELITA_CHAT
         s_agenda_tile = lv_tileview_add_tile(s_tv, 0, 1, LV_DIR_TOP);
         lv_obj_set_scrollbar_mode(s_agenda_tile, LV_SCROLLBAR_MODE_OFF);
         lv_obj_t *titulo = make_label(s_agenda_tile, &lv_font_unscii_16, COLOR_ACCENT);
@@ -1095,7 +1098,7 @@ static void build_screen(void)
      * these rows, so there's nowhere to put this without covering the face. */
     lv_obj_set_flag(s_name_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
 
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206
+#if CANELITA_CARATULA
     /* Carátula: la letra pixelada de la interfaz a 3x, a juego con la cara; sin fuente nueva. */
     s_clock_lbl = make_label(face, &lv_font_unscii_16, 0xffffff);
     lv_obj_set_style_transform_scale(s_clock_lbl, 3 * 256, 0);
@@ -1518,7 +1521,7 @@ static void set_meter_visible(bool visible)
     s_shown_lit = -1;
 }
 
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206
+#if CANELITA_CARATULA
 /* El letrero bajo la cara ocupa el lugar de la hora en el reloj. */
 static bool hay_letrero(void)
 {
@@ -1553,7 +1556,7 @@ static void update_power(float now)
     if (strcmp(buf, lv_label_get_text(s_power_lbl)) != 0) {
         lv_label_set_text(s_power_lbl, buf);
     }
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206
+#if CANELITA_CARATULA
     /* La hora, una vez por segundo. */
     char hora[8], fecha[20];
     hora_fecha(hora, sizeof(hora), fecha, sizeof(fecha));
@@ -1598,7 +1601,7 @@ static void update_status(muse_mode_t mode, float now)
         s_shown_name = name;
     }
     if ((int)mode != s_shown_state) {
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_206
+#if CANELITA_CARATULA
         /* Reloj: en reposo la carátula (hora y fecha) sin el anillo, que pasaría por detrás de la hora; al
          * escuchar, pensar o hablar vuelve el anillo y se esconde la hora. */
         bool reposo = mode == MUSE_MODE_IDLE;
